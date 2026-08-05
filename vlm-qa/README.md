@@ -16,8 +16,10 @@ Obtaining the media is out of scope; point the app at a file that already exists
 | Server | `geniex serve` | OpenAI-compatible HTTP API on `127.0.0.1:18181` |
 | Media | `ffmpeg` / `ffprobe` | Frame sampling and tiling with no ARM64 wheel problems |
 | App | this repo | Media → frames → multimodal request → answer |
+| Front end | WebSocket (`vlmqa serve`) | Upload media, ask, stream tokens back; `web/index.html` is a client |
 
-Only Python dependency is `requests`.
+Python dependencies are `requests` and — for the WebSocket server only —
+`websockets`. Both are pure Python; nothing has to be built on the board.
 
 ## Install
 
@@ -48,6 +50,9 @@ cd ~/vlm-qa
 # Several questions about one file
 .venv/bin/python -m vlmqa chat -m clip.mp4
 
+# Serve it over a WebSocket instead
+.venv/bin/python -m vlmqa serve
+
 # Is the server up, is the model loaded?
 .venv/bin/python -m vlmqa status
 ```
@@ -65,6 +70,82 @@ with Session(Path("clip.mp4"), frames=6) as s:
     print(s.ask("What is the setting?").text)
     print(s.ask("What colour is the vehicle?").text)   # follow-up keeps context
 ```
+
+## WebSocket server
+
+```bash
+.venv/bin/python -m vlmqa serve                  # ws://127.0.0.1:8765
+.venv/bin/python -m vlmqa serve --host 0.0.0.0   # set VLMQA_WS_TOKEN first
+```
+
+Then open `web/index.html` from disk — no web server, no build step. Pick a
+photo or a video, type a question, watch the answer arrive token by token.
+
+One connection is one conversation about one piece of media: upload once, ask
+as many questions as you like, and the follow-ups keep their context exactly as
+`chat` does. Streaming is the point of using a socket here — on this board the
+first token lands seconds ahead of the last.
+
+### Protocol
+
+Control messages are JSON text frames. Media bodies are **raw binary frames**,
+so a video costs its own size on the wire rather than the +33% base64 adds.
+
+| Client → server | |
+|---|---|
+| `{"type":"auth","token":"…"}` | Only if the server was started with a token |
+| `{"type":"upload","name":"clip.mp4","size":N,"frames":8,"strategy":"frames"}` | Header; exactly `N` bytes of binary frames follow |
+| `{"type":"upload","name":"cat.jpg","data":"<base64>"}` | Small files, in one message |
+| `{"type":"ask","prompt":"What happens?","stream":true}` | `frames`/`strategy` may be repeated here, which re-samples the media |
+| `{"type":"reset"}` `{"type":"status"}` `{"type":"ping"}` | |
+
+| Server → client | |
+|---|---|
+| `{"type":"ready","protocol":1,"model":"…","defaults":{…}}` | Sent on connect; `defaults` carries `max_frames` and the upload cap |
+| `{"type":"progress","received":N,"size":M}` | Throttled to ~5% steps |
+| `{"type":"media","kind":"video","images":6,"frames":["00:00.83",…],"note":null}` | Media is sampled and ready |
+| `{"type":"queued"}` | Another connection has the NPU |
+| `{"type":"token","text":"…"}` | Streaming only |
+| `{"type":"answer","text":"…","latency_s":4.8,"prompt_tokens":…}` | Always sent, streamed or not |
+| `{"type":"error","code":"auth\|protocol\|media\|vlm\|internal","message":"…"}` | The connection stays open |
+
+A malformed message costs you an `error`, not the socket and the video you
+already uploaded.
+
+```python
+import asyncio, json, websockets
+from pathlib import Path
+
+async def ask(path: Path, prompt: str) -> str:
+    async with websockets.connect("ws://127.0.0.1:8765", max_size=None) as ws:
+        await ws.recv()                                    # ready
+        body = path.read_bytes()
+        await ws.send(json.dumps({"type": "upload", "name": path.name, "size": len(body)}))
+        await ws.send(body)
+        await ws.send(json.dumps({"type": "ask", "prompt": prompt}))
+        while True:
+            msg = json.loads(await ws.recv())
+            if msg["type"] == "token":  print(msg["text"], end="", flush=True)
+            if msg["type"] == "answer": return msg["text"]
+            if msg["type"] == "error":  raise RuntimeError(msg["message"])
+
+print(asyncio.run(ask(Path("clip.mp4"), "What happens?")))
+```
+
+### What it does with the board
+
+- **One inference at a time.** The NPU is serial whatever the server does, so
+  requests take a shared lock; a client that has to wait gets `queued` first and
+  a truthful `latency_s` after.
+- **Nothing blocks the event loop.** ffmpeg and the call to GenieX run in worker
+  threads, so uploads and pings still get answered while the model is decoding.
+- **Uploads stream to disk** in the connection's temp dir, which is deleted when
+  the socket closes. A phone video never sits in RAM in one piece.
+- **Loopback by default.** `--host 0.0.0.0` on a shared network wants
+  `VLMQA_WS_TOKEN` set; the first message then has to be `auth`.
+
+One piece of media per connection — re-uploading replaces it, and 4096 tokens of
+context has no room for two videos anyway.
 
 ## How video is handled
 
@@ -128,6 +209,11 @@ Every setting is an environment variable; CLI flags win over them.
 | `VLMQA_DEFAULT_FRAMES` | `6` |
 | `VLMQA_CONTEXT_TOKENS` | `4096` |
 | `VLMQA_READ_TIMEOUT` | `600` |
+| `VLMQA_WS_HOST` | `127.0.0.1` |
+| `VLMQA_WS_PORT` | `8765` |
+| `VLMQA_WS_TOKEN` | *(unset — no auth)* |
+| `VLMQA_WS_MAX_UPLOAD_MB` | `512` |
+| `VLMQA_WS_MAX_MESSAGE_MB` | `16` |
 
 The app is a plain HTTP client, so it can also drive a GenieX server on another
 box — set `VLMQA_BASE_URL` and run it from anywhere.

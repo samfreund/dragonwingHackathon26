@@ -51,6 +51,14 @@ def build_parser() -> argparse.ArgumentParser:
     chat = sub.add_parser("chat", help="Interactive follow-up questions about one file.")
     _add_media_args(chat)
 
+    serve = sub.add_parser("serve", help="Run the WebSocket server (upload media, ask, stream back).")
+    serve.add_argument("--host", default=None,
+                       help=f"Interface to bind (default {settings.ws_host}). "
+                            "Use 0.0.0.0 to accept connections from the network -- "
+                            "set VLMQA_WS_TOKEN if you do.")
+    serve.add_argument("--port", "-p", type=int, default=None,
+                       help=f"Port to listen on (default {settings.ws_port}).")
+
     sub.add_parser("status", help="Check the GenieX server and loaded models.")
     return parser
 
@@ -166,6 +174,29 @@ def cmd_chat(args) -> int:
                 print(f"\nerror: {exc}\n", file=sys.stderr)
 
 
+def cmd_serve(args) -> int:
+    import asyncio
+
+    from .config import settings as cfg
+
+    try:
+        from .ws_server import serve
+    except ImportError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    try:
+        asyncio.run(serve(cfg, host=args.host, port=args.port))
+    except KeyboardInterrupt:
+        pass
+    except OSError as exc:
+        print(f"error: cannot listen on {args.host or cfg.ws_host}:"
+              f"{args.port if args.port is not None else cfg.ws_port} -- {exc}",
+              file=sys.stderr)
+        return 1
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     _apply_overrides(args)
@@ -177,6 +208,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_ask(args)
         if args.command == "chat":
             return cmd_chat(args)
+        if args.command == "serve":
+            return cmd_serve(args)
     except (MediaError, VLMError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

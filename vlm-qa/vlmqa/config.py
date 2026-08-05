@@ -57,6 +57,25 @@ class Settings:
     connect_timeout: float = float(os.getenv("VLMQA_CONNECT_TIMEOUT", "10"))
     read_timeout: float = float(os.getenv("VLMQA_READ_TIMEOUT", "600"))
 
+    # WebSocket front end. Loopback by default: the board has no business
+    # exposing an unauthenticated inference socket to the network. Set
+    # VLMQA_WS_TOKEN before binding it to 0.0.0.0.
+    ws_host: str = os.getenv("VLMQA_WS_HOST", "127.0.0.1")
+    ws_port: int = int(os.getenv("VLMQA_WS_PORT", "8765"))
+    ws_token: str = os.getenv("VLMQA_WS_TOKEN", "")
+    ws_max_upload_mb: int = int(os.getenv("VLMQA_WS_MAX_UPLOAD_MB", "512"))
+    # Cap on a single frame, so one message cannot balloon the process. Big
+    # enough for a generous upload chunk or a base64 photo sent in one go.
+    ws_max_message_mb: int = int(os.getenv("VLMQA_WS_MAX_MESSAGE_MB", "16"))
+
+    @property
+    def ws_max_upload_bytes(self) -> int:
+        return self.ws_max_upload_mb * 1024 * 1024
+
+    @property
+    def ws_max_message_bytes(self) -> int:
+        return self.ws_max_message_mb * 1024 * 1024
+
     @property
     def chat_url(self) -> str:
         return f"{self.base_url.rstrip('/')}/chat/completions"
