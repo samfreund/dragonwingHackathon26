@@ -65,8 +65,12 @@ cd "$APP_DIR"
 [ -d .venv ] || python3 -m venv .venv
 .venv/bin/pip -q install -r requirements.txt
 
-log "Starting the GenieX server if it isn't already running"
-if curl -sf -m 5 http://127.0.0.1:18181/v1/models >/dev/null 2>&1; then
+log "Starting the servers"
+# Under systemd when the units are available, so both come back after a crash
+# or a reboot; a bare nohup otherwise.
+if [ -x "$APP_DIR/deploy/install-services.sh" ] || [ -f "$APP_DIR/deploy/install-services.sh" ]; then
+  bash "$APP_DIR/deploy/install-services.sh"
+elif curl -sf -m 5 http://127.0.0.1:18181/v1/models >/dev/null 2>&1; then
   echo "Server already up"
 else
   nohup geniex serve > "$HOME/serve.log" 2>&1 </dev/null &
@@ -83,4 +87,6 @@ cat <<EOF
 Try it:
   cd $APP_DIR
   .venv/bin/python -m vlmqa ask -m <image-or-video> -q "your question"
+
+The WebSocket server is a systemd unit -- see 'journalctl -u vlmqa-ws -f'.
 EOF
