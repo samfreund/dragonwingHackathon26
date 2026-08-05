@@ -78,8 +78,9 @@ with Session(Path("clip.mp4"), frames=6) as s:
 .venv/bin/python -m vlmqa serve --host 0.0.0.0   # set VLMQA_WS_TOKEN first
 ```
 
-Then open `web/index.html` from disk — no web server, no build step. Pick a
-photo or a video, type a question, watch the answer arrive token by token.
+For a board that should just *be* a server, see
+[Running it as a service](#running-it-as-a-service) below — systemd units that
+survive a reboot, bound to the network and gated by a token.
 
 One connection is one conversation about one piece of media: upload once, ask
 as many questions as you like, and the follow-ups keep their context exactly as
@@ -146,6 +147,103 @@ print(asyncio.run(ask(Path("clip.mp4"), "What happens?")))
 
 One piece of media per connection — re-uploading replaces it, and 4096 tokens of
 context has no room for two videos anyway.
+
+`web/index.html` is a dependency-free browser client for poking at the server
+without an app; it is a debugging aid, not part of the service.
+
+## Running it as a service
+
+```bash
+ssh ubuntu@iq9 'bash -s' < deploy/install-services.sh
+```
+
+Installs two systemd units — `geniex` (the model on the NPU) and `vlmqa-ws`
+(the socket) — enables both at boot, and restarts either if it dies. Re-running
+updates the units and **keeps the existing token**, so deployed clients don't
+break. It prints the addresses it is listening on and the token to use.
+
+| | |
+|---|---|
+| Config | `/etc/vlmqa/vlmqa.env` — root-owned `0600`, holds the token |
+| Logs | `journalctl -u vlmqa-ws -f` (and `-u geniex`) |
+| Restart | `sudo systemctl restart vlmqa-ws` |
+| Token | `sudo cat /etc/vlmqa/vlmqa.env` |
+
+The unit binds `0.0.0.0` so a phone on the same network can reach it, which is
+exactly why the token is generated and required. Anything that can route to the
+board can spend its NPU otherwise. Over Tailscale the traffic is encrypted and
+the address works from anywhere; on plain wifi, `ws://` is in the clear, so
+treat the token as the only thing standing between the board and the network.
+
+## From an Android app
+
+Point the app at `ws://<board>:8765` and drive the same protocol:
+
+1. Wait for `ready`. It carries `auth_required` and, in `defaults`,
+   `max_message_bytes` and `max_upload_bytes` — read the chunk size from there
+   rather than hardcoding it.
+2. Send `auth` if asked. `{"type":"auth","ok":true}` comes back; a bad token
+   gets an `error` with `"code":"auth"`.
+3. Send the `upload` header, then the file as binary frames.
+4. Send `ask`, render `token` messages as they arrive, finish on `answer`.
+
+```kotlin
+val ws = OkHttpClient().newWebSocket(
+    Request.Builder().url("ws://100.117.232.121:8765").build(),
+    object : WebSocketListener() {
+        override fun onMessage(ws: WebSocket, text: String) {
+            val m = JSONObject(text)
+            when (m.getString("type")) {
+                "ready"  -> ws.send("""{"type":"auth","token":"$TOKEN"}""")
+                "auth"   -> upload(ws, file)
+                "media"  -> ws.send("""{"type":"ask","prompt":"What is this?"}""")
+                "token"  -> appendToBubble(m.getString("text"))
+                "answer" -> finish(m.getString("text"))
+                "error"  -> showError(m.getString("message"))
+            }
+        }
+    })
+
+fun upload(ws: WebSocket, file: File) {
+    ws.send("""{"type":"upload","name":"${file.name}","size":${file.length()}}""")
+    file.inputStream().use { stream ->
+        val buf = ByteArray(256 * 1024)                 // well under the cap
+        while (true) {
+            val n = stream.read(buf)
+            if (n <= 0) break
+            ws.send(ByteString.of(buf, 0, n))
+        }
+    }
+}
+```
+
+Three things worth knowing before you debug them the hard way:
+
+- **Chunk the upload.** A single frame over `max_message_bytes` (16 MB) does not
+  come back as an `error` — the connection closes with WebSocket code `1009`,
+  `"frame exceeds limit of 16777216 bytes"`. Sending a whole video in one
+  `ws.send()` is the obvious way to hit this.
+- **Cleartext is blocked by default.** Android bars `ws://` on API 28+ unless
+  the manifest sets `android:usesCleartextTraffic="true"` or a network security
+  config allows that host. Tailscale sidesteps it and encrypts the hop.
+- **Reconnect rather than resume.** State lives on the connection: dropping it
+  discards the uploaded media, the conversation, and the server's temp files.
+  Backgrounding the app long enough to miss the 20 s pings will drop it.
+
+Measured from a laptop over Tailscale, one 78 KB photo, warm model:
+
+| | |
+|---|---|
+| Connect + auth | ~125 ms |
+| Upload | ~0.2 s |
+| First token | ~0.7 s |
+| Complete answer (20 token messages) | ~2.0 s |
+| Follow-up question, no re-upload | ~0.8 s |
+
+The first request after the service starts is much slower — ~7 s — while the
+bundle warms up. Prefill dominates: on that first request the first token took
+6.7 s of a 7.6 s total, so a progress spinner earns its keep before the stream
+starts, not during it.
 
 ## How video is handled
 
