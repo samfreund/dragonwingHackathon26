@@ -1,0 +1,23 @@
+*.iml
+.gradle
+/local.properties
+/.idea/caches
+/.idea/libraries
+/.idea/modules.xml
+/.idea/workspace.xml
+/.idea/navEditor.xml
+/.idea/assetWizardSettings.xml
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+
+# Qualcomm QAIRT runtime libraries — proprietary, obtained from the QAIRT SDK.
+# See README.md; do not commit these.
+/app/src/main/jniLibs/
+
+# Whisper model bundle (~192 MB) — pushed to the device with adb, never bundled.
+*.onnx
+*_qairt_context.bin
