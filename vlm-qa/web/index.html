@@ -1,0 +1,211 @@
+<!doctype html>
+<!--
+  Demo client for `vlmqa serve`. No build step and no server needed: open
+  this file straight from disk and point it at the board.
+
+      xdg-open web/index.html      # or just double-click it
+
+  Videos are sent as binary frames in 512 KB chunks, throttled on
+  bufferedAmount so the browser does not buffer a whole clip in memory.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vlm-qa</title>
+<style>
+  :root { color-scheme: dark; --bg:#12141a; --panel:#1a1d26; --line:#2b303d;
+          --fg:#e6e8ee; --dim:#8b93a7; --accent:#5aa9ff; --bad:#ff6b6b; --ok:#4ade80; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.5 ui-sans-serif,system-ui,sans-serif; }
+  .wrap { max-width:860px; margin:0 auto; padding:24px 16px 48px; }
+  h1 { font-size:18px; margin:0 0 2px; font-weight:600; }
+  .sub { color:var(--dim); font-size:13px; margin-bottom:20px; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+           padding:14px; margin-bottom:14px; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  .row + .row { margin-top:10px; }
+  label { color:var(--dim); font-size:12px; }
+  input, select, button, textarea {
+    background:#0e1017; color:var(--fg); border:1px solid var(--line);
+    border-radius:7px; padding:8px 10px; font:inherit; }
+  input:focus, textarea:focus, select:focus { outline:1px solid var(--accent); border-color:var(--accent); }
+  button { background:var(--accent); color:#06101f; border:0; font-weight:600; cursor:pointer; }
+  button:disabled { background:#2b303d; color:var(--dim); cursor:not-allowed; }
+  button.ghost { background:transparent; border:1px solid var(--line); color:var(--fg); font-weight:500; }
+  .grow { flex:1; min-width:140px; }
+  #prompt { width:100%; resize:vertical; min-height:64px; }
+  .dot { width:8px; height:8px; border-radius:50%; background:var(--bad); display:inline-block; }
+  .dot.on { background:var(--ok); }
+  #bar { height:3px; background:var(--line); border-radius:2px; overflow:hidden; margin-top:10px; display:none; }
+  #bar > i { display:block; height:100%; width:0; background:var(--accent); transition:width .1s linear; }
+  #log { display:flex; flex-direction:column; gap:10px; }
+  .msg { border:1px solid var(--line); border-radius:8px; padding:10px 12px; white-space:pre-wrap; word-break:break-word; }
+  .msg.you { background:#161a24; color:var(--dim); }
+  .msg.sys { border-style:dashed; color:var(--dim); font-size:12.5px; }
+  .msg.err { border-color:var(--bad); color:var(--bad); }
+  .meta { color:var(--dim); font-size:12px; margin-top:6px; }
+  .cursor::after { content:"▍"; color:var(--accent); animation:b 1s steps(2) infinite; }
+  @keyframes b { 50% { opacity:0 } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>vlm-qa</h1>
+  <div class="sub">Ask a vision-language model about a photo or a video. Running on the Hexagon NPU.</div>
+
+  <div class="panel">
+    <div class="row">
+      <span class="dot" id="dot"></span>
+      <input class="grow" id="url" value="ws://127.0.0.1:8765" spellcheck="false">
+      <input id="token" placeholder="token (if set)" size="14">
+      <button id="connect">Connect</button>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="row">
+      <input type="file" class="grow" id="file" accept="image/*,video/*">
+      <label>frames</label><input id="frames" type="number" min="1" value="6" style="width:72px">
+      <label>as</label>
+      <select id="strategy"><option value="frames">separate</option><option value="sheet">contact sheet</option></select>
+      <button id="send" disabled>Upload</button>
+    </div>
+    <div id="bar"><i></i></div>
+  </div>
+
+  <div class="panel">
+    <textarea id="prompt" placeholder="What is happening in this video?"></textarea>
+    <div class="row" style="margin-top:10px">
+      <button id="ask" disabled>Ask</button>
+      <button class="ghost" id="reset">New media</button>
+      <button class="ghost" id="status">Status</button>
+      <span class="meta" id="hint">Connect, pick a file, then ask. Follow-ups keep the conversation.</span>
+    </div>
+  </div>
+
+  <div id="log"></div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const CHUNK = 512 * 1024;
+let ws = null, ready = false, hasMedia = false, live = null;
+
+function add(cls, text) {
+  const el = document.createElement("div");
+  el.className = "msg " + cls;
+  el.textContent = text;
+  $("log").prepend(el);
+  return el;
+}
+function setConnected(on) {
+  ready = on;
+  $("dot").classList.toggle("on", on);
+  $("connect").textContent = on ? "Disconnect" : "Connect";
+  $("send").disabled = !on;
+  $("ask").disabled = !(on && hasMedia);
+}
+function progress(received, size) {
+  const bar = $("bar");
+  bar.style.display = received >= size ? "none" : "block";
+  bar.firstElementChild.style.width = (100 * received / Math.max(size, 1)) + "%";
+}
+
+$("connect").onclick = () => {
+  if (ws) { ws.close(); return; }
+  ws = new WebSocket($("url").value.trim());
+  ws.binaryType = "arraybuffer";
+  ws.onopen = () => { if ($("token").value) send({type: "auth", token: $("token").value}); };
+  ws.onclose = () => { ws = null; hasMedia = false; setConnected(false); add("sys", "disconnected"); };
+  ws.onerror = () => add("err", "connection failed — is `vlmqa serve` running?");
+  ws.onmessage = ev => handle(JSON.parse(ev.data));
+};
+
+const send = obj => ws.send(JSON.stringify(obj));
+
+function handle(m) {
+  switch (m.type) {
+    case "ready":
+      setConnected(true);
+      add("sys", `connected — ${m.model} (up to ${m.defaults.max_frames} frames)`);
+      $("frames").value = m.defaults.frames;
+      break;
+    case "progress": progress(m.received, m.size); break;
+    case "media":
+      hasMedia = true; $("ask").disabled = false; progress(1, 1);
+      add("sys", m.description + (m.note ? "\nnote: " + m.note : ""));
+      break;
+    case "queued": $("hint").textContent = "queued — the NPU is busy"; break;
+    case "token":
+      if (!live) { live = add("", ""); live.classList.add("cursor"); }
+      live.textContent += m.text;
+      break;
+    case "answer": {
+      const el = live || add("", m.text);
+      el.classList.remove("cursor");
+      if (live) live.textContent = m.text;      // authoritative, trimmed
+      const meta = document.createElement("div");
+      meta.className = "meta";
+      meta.textContent = `${m.latency_s}s` +
+        (m.completion_tokens ? ` · ${m.completion_tokens} tokens` : "");
+      el.appendChild(meta);
+      live = null;
+      $("ask").disabled = false;
+      $("hint").textContent = "Ask a follow-up — the model keeps the conversation.";
+      break;
+    }
+    case "status":
+      add("sys", `${m.server} ${m.up ? "up" : "DOWN"} · models: ${m.models.join(", ") || "none"}` +
+                 (m.media ? `\nloaded: ${m.media}` : ""));
+      break;
+    case "reset": hasMedia = false; $("ask").disabled = true; add("sys", "media cleared"); break;
+    case "error":
+      live = null;
+      add("err", `${m.code}: ${m.message}`);
+      $("ask").disabled = !hasMedia;
+      break;
+  }
+}
+
+$("send").onclick = async () => {
+  const file = $("file").files[0];
+  if (!file) return add("err", "pick an image or a video first");
+
+  send({
+    type: "upload",
+    name: file.name,
+    size: file.size,
+    frames: Number($("frames").value) || undefined,
+    strategy: $("strategy").value,
+  });
+
+  $("send").disabled = true;
+  try {
+    for (let at = 0; at < file.size; at += CHUNK) {
+      // Backpressure: without this the browser queues the whole clip in RAM.
+      while (ws.bufferedAmount > 4 * CHUNK) await new Promise(r => setTimeout(r, 20));
+      if (!ws) return;
+      ws.send(await file.slice(at, at + CHUNK).arrayBuffer());
+    }
+  } finally {
+    $("send").disabled = !ready;
+  }
+};
+
+$("ask").onclick = () => {
+  const prompt = $("prompt").value.trim();
+  if (!prompt) return;
+  add("you", prompt);
+  send({type: "ask", prompt, stream: true});
+  $("ask").disabled = true;
+  $("hint").textContent = "thinking…";
+};
+$("prompt").onkeydown = e => {
+  if ((e.metaKey || e.ctrlKey) && e.key === "Enter") $("ask").click();
+};
+$("reset").onclick = () => ready && send({type: "reset"});
+$("status").onclick = () => ready && send({type: "status"});
+</script>
+</body>
+</html>

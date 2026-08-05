@@ -1,1 +1,3 @@
 requests>=2.31.0
+# Pure Python, so no ARM64 wheel to build. Only needed for `vlmqa serve`.
+websockets>=13.0
