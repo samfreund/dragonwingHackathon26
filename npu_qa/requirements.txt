@@ -1,0 +1,9 @@
+numpy>=1.24
+transformers>=4.40
+huggingface_hub>=0.20
+onnx>=1.14                 # one-time: patches dynamic ONNX shapes to static
+
+# Hexagon NPU ONNX Execution Provider (win-arm64 only). run.ps1 creates the
+# venv from a native arm64 Python so this wheel installs and reaches the NPU.
+onnxruntime-qnn>=1.24.0
+# onnxruntime>=1.18         # CPU fallback -- use this instead on non-arm64 hosts
