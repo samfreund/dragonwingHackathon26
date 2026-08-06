@@ -56,6 +56,7 @@ dependencies {
     // ONNX Runtime with the QNN execution provider — runs the Whisper graphs on the
     // Hexagon NPU. The plain onnxruntime-android artifact has no QNN support.
     implementation(libs.onnxruntime.android.qnn)
+    implementation(libs.okhttp)
     testImplementation(libs.junit)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)

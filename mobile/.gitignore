@@ -21,3 +21,6 @@ local.properties
 # Whisper model bundle (~192 MB) — pushed to the device with adb, never bundled.
 *.onnx
 *_qairt_context.bin
+
+# Board connection details including the shared auth token — push with adb, never commit.
+vlm.properties
