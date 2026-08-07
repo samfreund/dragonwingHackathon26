@@ -1,19 +1,27 @@
-# IQ9-to-laptop text stream
+# DragonAssist WebSocket transport
 
-This standalone transport receives plain VLM text over WebSocket and appends it
-verbatim to one durable, unbounded file per video. It does not run inference,
-parse the text, or depend on the laptop's RAG implementation.
+One laptop service accepts continuous VLM text from IQ9 and questions from the
+phone. IQ9 text is appended verbatim to one durable, unbounded file per video.
+Phone queries and results are persisted so answers survive disconnects.
 
-## Laptop receiver (`qcworkshop3`)
+## Run on `qcworkshop3`
 
 From the repository root in PowerShell:
 
 ```powershell
-$env:DRAGONASSIST_STREAM_TOKEN = "replace-with-a-shared-secret"
+$env:DRAGONASSIST_STREAM_TOKEN = "replace-with-an-iq9-secret"
+$env:DRAGONASSIST_PHONE_TOKEN = "replace-with-a-different-phone-secret"
 .\stream_transport\run.ps1
 ```
 
-The default endpoint is `ws://qcworkshop3:8001`. Output is written to:
+Both endpoints use port 8001:
+
+```text
+ws://qcworkshop3:8001/v1/iq9
+ws://qcworkshop3:8001/v1/phone
+```
+
+`/` remains an alias for the IQ9 endpoint. Video output is stored at:
 
 ```text
 received/<video_id>/context.txt
@@ -24,41 +32,65 @@ Configuration:
 | Variable | Default | Purpose |
 |---|---|---|
 | `DRAGONASSIST_STREAM_HOST` | `0.0.0.0` | Bind interface |
-| `DRAGONASSIST_STREAM_PORT` | `8001` | WebSocket port |
-| `DRAGONASSIST_STREAM_TOKEN` | required off loopback | Shared secret |
-| `DRAGONASSIST_STREAM_ROOT` | `received` | Output directory |
+| `DRAGONASSIST_STREAM_PORT` | `8001` | Shared WebSocket port |
+| `DRAGONASSIST_STREAM_TOKEN` | required off loopback | IQ9 secret |
+| `DRAGONASSIST_PHONE_TOKEN` | required off loopback | Phone secret |
+| `DRAGONASSIST_STREAM_ROOT` | `received` | Context and broker storage |
 | `DRAGONASSIST_STREAM_MAX_MESSAGE_BYTES` | `1048576` | Per-frame limit |
 
-Restrict Windows Firewall TCP 8001 to the Tailscale network. Never commit or
-put the token in a WebSocket URL.
+Restrict Windows Firewall TCP 8001 to Tailscale. Never commit tokens or put
+them in a WebSocket URL.
 
-## Mock IQ9 sender
-
-Do not run or deploy anything on IQ9 while device benchmarking is active. Test
-from another machine with:
+## IQ9 sender
 
 ```powershell
 python -m stream_transport.mock_iq9 `
-  --url ws://qcworkshop3:8001 `
+  --url ws://qcworkshop3:8001/v1/iq9 `
   --video-id demo-video `
   --input sample.txt `
-  --token "replace-with-a-shared-secret" `
+  --token "iq9-secret" `
   --chunk-chars 256
 ```
 
-The sender resumes from the receiver's `next_sequence` after a disconnect.
-Text is appended exactly as supplied; the receiver adds no separators.
+The sender resumes from `next_sequence` after a disconnect. Text is appended
+exactly as supplied; the receiver adds no separators.
+
+## Phone query and laptop worker
+
+Submit a question and wait for the server to push its result:
+
+```powershell
+python -m stream_transport.mock_phone `
+  --url ws://qcworkshop3:8001/v1/phone `
+  --token "phone-secret" `
+  --request-id request-1 `
+  --video-id demo-video `
+  --question "What happened?"
+```
+
+Exercise the worker handoff without loading a model:
+
+```powershell
+python -m stream_transport.laptop_worker `
+  --storage-root received --once `
+  --mock-answer "The person entered the room."
+```
+
+Without `--mock-answer`, the worker loads the repository's `ask.HybridQA` and
+answers against the matching `context.txt`. Sriram can instead import
+`PhoneQueryBroker` and use `claim_next()`, `complete()`, and `fail()` from his
+own service.
 
 ## Protocol v1
 
-One socket carries one video. Client messages are `start`, `text`, and optional
-`end`; server messages are `started`, `ack`, and `error`. Each text message has
-a monotonically increasing sequence. An acknowledgement is sent only after the
-UTF-8 bytes and sequence state are durable. Retries are idempotent.
+An IQ9 socket carries one video. Messages are `start`, `text`, and optional
+`end`; replies are `started`, `ack`, and `error`. Sequence acknowledgements are
+sent only after the UTF-8 text and state are durable.
 
-Sriram's laptop code can read or tail `received/<video_id>/context.txt` while it
-grows. The SQLite file beside the video directories is private transport state,
-not an application integration API.
+A phone starts with `phone_start`, submits `query`, receives `query_ack`, then
+receives a pushed `query_result`. After reconnecting, `query_status` retrieves
+a stored result. Stable request IDs make retries idempotent. IQ9 and phone
+tokens are deliberately not interchangeable.
 
 ## Tests
 

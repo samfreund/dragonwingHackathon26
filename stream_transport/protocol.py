@@ -35,11 +35,15 @@ def parse_message(raw: str | bytes) -> dict[str, Any]:
 
 
 def video_id(value: Any) -> str:
+    return safe_id(value, "video_id")
+
+
+def safe_id(value: Any, field: str) -> str:
     value = str(value or "")
     if not VIDEO_ID_RE.fullmatch(value):
         raise ProtocolError(
-            "invalid_video_id",
-            "video_id must be 1-128 filename-safe characters",
+            f"invalid_{field}",
+            f"{field} must be 1-128 filename-safe characters",
         )
     return value
 

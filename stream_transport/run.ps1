@@ -12,7 +12,10 @@ $Venv = Join-Path $PSScriptRoot ".venv"
 $Python = Join-Path $Venv "Scripts\python.exe"
 
 if (-not $env:DRAGONASSIST_STREAM_TOKEN) {
-    throw "Set DRAGONASSIST_STREAM_TOKEN before exposing the receiver"
+    throw "Set DRAGONASSIST_STREAM_TOKEN before exposing the server"
+}
+if (-not $env:DRAGONASSIST_PHONE_TOKEN) {
+    throw "Set DRAGONASSIST_PHONE_TOKEN before exposing the server"
 }
 if (-not (Test-Path $Python)) {
     py -m venv $Venv
@@ -21,5 +24,5 @@ if (-not (Test-Path $Python)) {
 if ($LASTEXITCODE -ne 0) { throw "Dependency installation failed" }
 
 Set-Location (Split-Path $PSScriptRoot -Parent)
-& $Python -m stream_transport.receiver `
+& $Python -m stream_transport.server `
     --host $HostAddress --port $Port --storage-root $StorageRoot
