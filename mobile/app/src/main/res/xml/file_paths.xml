@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    The system camera app writes the captured photo into our own files directory through
+    this provider. Sharing a raw file:// URI with another app throws FileUriExposedException
+    on modern Android, so a content:// URI from a FileProvider is the supported route.
+-->
+<paths>
+    <files-path name="captures" path="captures/" />
+</paths>

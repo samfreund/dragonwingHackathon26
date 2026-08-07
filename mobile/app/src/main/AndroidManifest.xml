@@ -27,6 +27,21 @@
         -->
         <uses-native-library android:name="libcdsprpc.so" android:required="true" />
         <uses-native-library android:name="libadsprpc.so" android:required="false" />
+        <!--
+            Grants the system camera app write access to a single file in our sandbox.
+            grantUriPermissions is what makes the temporary access work without giving
+            the camera app blanket storage permission.
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
