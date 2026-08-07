@@ -96,7 +96,7 @@ READER_PATH = HERE / "npu_qa" / "npu_qa.py"
 # Cloud backend. Defaults match crewai_imagine_test.py (the Indonesia endpoint
 # it ends up using); the environment wins when set.
 DEFAULT_ENDPOINT = "https://aisuite-indonesia.cirrascale.com/apis/v2"
-DEFAULT_API_KEY = "745f6cf2-f53b-4ea8-ac62-1e26d7a1646b"
+DEFAULT_API_KEY = ""
 DEFAULT_CLOUD_MODEL = "Llama-3.1-8B"
 # DEFAULT_CLOUD_MODEL = "Llama-3.3-70B"
 

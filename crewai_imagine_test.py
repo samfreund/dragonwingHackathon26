@@ -3,8 +3,7 @@ from pprint import pprint
 from imagine import ImagineClient, ModelType
 from imagine import ChatMessage
 
-client = ImagineClient(api_key="7256efb0-e4e9-4be9-b7c3-f79073192f85", endpoint="https://aisuite.cirrascale.com/apis/v2")
-client = ImagineClient(api_key="745f6cf2-f53b-4ea8-ac62-1e26d7a1646b", endpoint="https://aisuite-indonesia.cirrascale.com/apis/v2")
+client = ImagineClient(api_key="", endpoint="")
 
 all_models = client.get_available_models_by_type()
 pprint(all_models)
