@@ -1,0 +1,11 @@
+numpy>=1.24
+transformers>=4.40
+jinja2>=3.1                # renders the router model's chat template
+huggingface_hub>=0.20
+
+# The router LLM runs on the CPU by default -- deliberately, so the Hexagon NPU
+# stays free for the DistilBERT reader this router feeds. See router.py.
+onnxruntime>=1.22
+
+# The optional --npu path additionally needs onnxruntime-qnn, which has a
+# win-arm64 wheel only. run.ps1 installs requirements-npu.txt on ARM64 hosts.

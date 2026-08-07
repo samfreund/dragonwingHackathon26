@@ -1,0 +1,4 @@
+# Optional: enables `router.py --npu`. win-arm64 wheel only -- installing this
+# on an emulated x86 (Prism) or genuine x86_64 Python fails. run.ps1 installs it
+# only when it has built the venv from a native arm64 interpreter.
+onnxruntime-qnn>=1.24.0
