@@ -15,6 +15,7 @@ import com.example.dragonassist.audio.WavWriter
 import com.example.dragonassist.speak.AndroidSpeaker
 import com.example.dragonassist.speak.SentenceBuffer
 import com.example.dragonassist.speak.Speaker
+import com.example.dragonassist.ui.theme.ThemeMode
 import com.example.dragonassist.transcribe.StubTranscriber
 import com.example.dragonassist.transcribe.Transcriber
 import com.example.dragonassist.transcribe.TranscriptionException
@@ -25,18 +26,24 @@ import com.example.dragonassist.vlm.CapturedMedia
 import com.example.dragonassist.vlm.ImageScaler
 import com.example.dragonassist.vlm.VlmClient
 import com.example.dragonassist.vlm.VlmConfig
+import com.example.dragonassist.net.ContextStreamClient
+import com.example.dragonassist.net.SystemHealth
+import com.example.dragonassist.net.TextQaClient
+import com.example.dragonassist.net.TransportException
 import com.example.dragonassist.vlm.VlmException
+import java.util.UUID
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
 
-enum class Phase { Idle, Recording, Transcribing, Uploading, Answering }
+enum class Phase { Idle, Recording, Transcribing, Uploading, Narrating, Answering }
 
 enum class MediaKind { Photo, Video }
 
@@ -59,6 +66,13 @@ data class RecordUiState(
     val lastAnswerSeconds: Double = 0.0,
     val speechEnabled: Boolean = true,
     val speaker: String = "",
+    val themeMode: ThemeMode = ThemeMode.System,
+    /** Which backend produced [answer]; shown so the source is never guessed at. */
+    val answerRoute: String? = null,
+    val health: String = "",
+    val healthy: Boolean = false,
+    /** True once the board has the media; ASK stays disabled until then. */
+    val mediaSent: Boolean = false,
 ) {
     val hasMedia: Boolean get() = mediaKind != null
 }
@@ -70,8 +84,20 @@ class RecordViewModel(app: Application) : AndroidViewModel(app) {
     private var transcriber: Transcriber =
         if (WhisperSession.modelsPresent(app)) WhisperTranscriber(app) else StubTranscriber()
 
-    /** Held open across questions: one connection is one conversation about one media. */
+    /**
+     * Used to deliver media to the board and nothing else — no prompt, no question.
+     * The board has its own system prompt, and narration reaching the laptop is handled
+     * further down the stack.
+     *
+     * Nothing the board says is ever shown, spoken or stored, so a board-only setup
+     * cannot masquerade as a working full-stack demo.
+     */
     private var vlm: VlmClient? = null
+
+    private var textQa: TextQaClient? = null
+
+    /** One consultation, used as the transport's `video_id`. */
+    private val sessionId: String = "session-${UUID.randomUUID().toString().take(8)}"
 
     private var media: CapturedMedia? = null
 
@@ -80,15 +106,30 @@ class RecordViewModel(app: Application) : AndroidViewModel(app) {
 
     private var pendingCapture: File? = null
 
+    /** Guards against two uploads racing after a quick retake. */
+    @Volatile private var uploading = false
+
     private val speaker: Speaker = AndroidSpeaker(app)
 
     /** Releases the streamed answer a sentence at a time, so speech starts early. */
     private val sentences = SentenceBuffer()
 
-    private val _state = MutableStateFlow(RecordUiState())
+    /** Survives process death, so the choice sticks between demo runs. */
+    private val prefs = app.getSharedPreferences("dragonassist", Application.MODE_PRIVATE)
+
+    private val _state = MutableStateFlow(
+        RecordUiState(
+            themeMode = runCatching {
+                ThemeMode.valueOf(prefs.getString(KEY_THEME, null) ?: ThemeMode.System.name)
+            }.getOrDefault(ThemeMode.System),
+        )
+    )
     val state: StateFlow<RecordUiState> = _state.asStateFlow()
 
     init {
+        // The single string the phone and the board must agree on: it names the upload
+        // and the context file the laptop answers from.
+        Log.i(TAG, "session id: $sessionId")
         viewModelScope.launch {
             withContext(Dispatchers.IO) { transcriber.prepare() }
             _state.update { it.copy(engine = transcriber.name) }
@@ -117,13 +158,19 @@ class RecordViewModel(app: Application) : AndroidViewModel(app) {
         val file = pendingCapture ?: return
         viewModelScope.launch {
             try {
-                val jpeg = withContext(Dispatchers.IO) {
-                    ImageScaler.scaleToJpeg(getApplication(), Uri.fromFile(file))
+                val (jpeg, previewFile) = withContext(Dispatchers.IO) {
+                    val scaled = ImageScaler.scaleToJpeg(getApplication(), Uri.fromFile(file))
+                    // Preview the *scaled* bytes, not the original: BitmapFactory ignores
+                    // EXIF orientation, so previewing capture.jpg shows a sideways photo
+                    // while an upright one is sent. Same pixels in both places.
+                    val preview = File(getApplication<Application>().filesDir, "captures/preview.jpg")
+                    preview.writeBytes(scaled)
+                    scaled to preview
                 }
                 adopt(
                     CapturedMedia.Photo(file, jpeg),
                     kind = MediaKind.Photo,
-                    previewPath = file.absolutePath,
+                    previewPath = previewFile.absolutePath,
                     label = "Photo · ${jpeg.size / 1024} KB",
                     warning = null,
                 )
@@ -182,10 +229,83 @@ class RecordViewModel(app: Application) : AndroidViewModel(app) {
                 mediaLabel = label,
                 transcript = "",
                 answer = "",
+                answerRoute = null,
                 uploadProgress = 0f,
                 warning = warning,
                 error = null,
             )
+        }
+        // Send it immediately. The user is about to spend several seconds thinking of a
+        // question and speaking it; the board can be looking at the image throughout,
+        // instead of the whole pipeline starting only once they stop talking. It also
+        // takes a 21 MB video upload off the critical path.
+        uploadMedia(captured)
+    }
+
+    /** Delivers media to the board in the background, guarding against a double send. */
+    private fun uploadMedia(captured: CapturedMedia) {
+        if (uploading) return
+        val config = VlmConfig.load(getApplication()) ?: return
+        uploading = true
+        viewModelScope.launch {
+            _state.update { it.copy(mediaSent = false, uploadProgress = 0f, error = null) }
+            try {
+                val client = vlm ?: VlmClient(config).also { fresh ->
+                    val ready = fresh.connect()
+                    vlm = fresh
+                    _state.update { it.copy(vlmModel = ready.optString("model")) }
+                }
+                when (captured) {
+                    is CapturedMedia.Photo ->
+                        client.uploadImage(captured.jpeg, "$sessionId.jpg")
+
+                    is CapturedMedia.Video ->
+                        client.uploadFile(
+                            file = captured.file,
+                            name = "$sessionId.mp4",
+                            frames = VIDEO_FRAMES,
+                            strategy = VIDEO_STRATEGY,
+                        ) { sent, total ->
+                            _state.update {
+                                it.copy(uploadProgress = sent.toFloat() / total.coerceAtLeast(1))
+                            }
+                        }
+                }
+                _state.update { it.copy(uploadProgress = 1f, phase = Phase.Narrating) }
+
+                // Ask the board to describe what it received.
+                //
+                // Runs here rather than at question time so it overlaps with the user
+                // thinking of and speaking their question, instead of adding to the wait.
+                val description = client.ask(NARRATION_PROMPT).text
+                Log.i(TAG, "description (${description.length} chars): ${description.take(120)}")
+
+                // Relay it to the laptop ourselves, under the same session id we will
+                // later ask about. The board publishes under a fixed `phone-live`, which
+                // never matches the id in our query — routing it through the phone keeps
+                // the write and the read addressed to the same context file.
+                ContextStreamClient(config.contextUrl, config.streamToken).use { stream ->
+                    stream.open(sessionId)
+                    stream.append(description.trim() + "\n")
+                    stream.end()
+                }
+                Log.i(TAG, "context written for $sessionId")
+
+                uploadedMedia = captured
+                _state.update { it.copy(mediaSent = true, phase = Phase.Idle) }
+            } catch (e: Exception) {
+                Log.e(TAG, "media upload or narration failed", e)
+                _state.update {
+                    it.copy(
+                        phase = Phase.Idle,
+                        mediaSent = false,
+                        error = if (e is VlmException) describeVlm(e)
+                        else "Could not send the media: ${e.message}",
+                    )
+                }
+            } finally {
+                uploading = false
+            }
         }
     }
 
@@ -249,13 +369,22 @@ class RecordViewModel(app: Application) : AndroidViewModel(app) {
 
     // ------------------------------------------------------------------ the board
 
+    /**
+     * Answers a question by going through the whole stack.
+     *
+     * The board is used to *look*, never to reply: its narration is forwarded to the
+     * laptop by the bridge, and the laptop answers. Nothing the board says is displayed,
+     * so there is no path by which a board-only setup can look like a working demo.
+     *
+     * Fails loudly and names the broken link rather than degrading to a direct answer.
+     */
     private suspend fun ask(question: String) {
         val config = VlmConfig.load(getApplication())
-        if (config == null) {
+        if (config == null || !config.hasLaptop) {
             _state.update {
                 it.copy(
                     phase = Phase.Idle,
-                    error = "No board configured. Push vlm.properties to " +
+                    error = "The laptop is not configured. Set laptop_host in " +
                         VlmConfig.file(getApplication<Application>()).absolutePath,
                 )
             }
@@ -263,76 +392,85 @@ class RecordViewModel(app: Application) : AndroidViewModel(app) {
         }
 
         try {
-            val client = vlm ?: VlmClient(config).also { fresh ->
-                val ready = fresh.connect()
-                vlm = fresh
-                _state.update { it.copy(vlmModel = ready.optString("model")) }
-            }
-
-            val current = media ?: return
-            if (uploadedMedia !== current) {
-                _state.update { it.copy(phase = Phase.Uploading, uploadProgress = 0f) }
-                when (current) {
-                    is CapturedMedia.Photo ->
-                        client.uploadImage(current.jpeg, "capture.jpg")
-
-                    is CapturedMedia.Video ->
-                        client.uploadFile(
-                            file = current.file,
-                            name = "capture.mp4",
-                            frames = VIDEO_FRAMES,
-                            strategy = VIDEO_STRATEGY,
-                        ) { sent, total ->
-                            _state.update {
-                                it.copy(uploadProgress = sent.toFloat() / total.coerceAtLeast(1))
-                            }
-                        }
+            // Media is sent at capture time, not here. If it is still in flight, wait
+            // rather than asking about something the board has not received.
+            while (uploading) delay(100)
+            if (media != null && uploadedMedia == null) {
+                _state.update {
+                    it.copy(phase = Phase.Idle, error = "The media didn't reach the board.")
                 }
-                uploadedMedia = current
+                return
             }
 
-            _state.update { it.copy(phase = Phase.Answering, answer = "", queued = false) }
+            // 2. Ask the laptop. This is the only source of anything the user sees.
+            _state.update {
+                it.copy(phase = Phase.Answering, answer = "", answerRoute = null, queued = false)
+            }
             speaker.stop()
             sentences.clear()
 
-            val answer = client.ask(
-                prompt = question,
+            val qa = textQa ?: TextQaClient(
+                config.textQaUrl, config.phoneToken, "galaxy-s25-ultra",
+            ).also { it.connect(); textQa = it }
+
+            val answer = qa.ask(
+                sessionId = sessionId,
+                question = question,
+                requestId = "q-${UUID.randomUUID()}",
                 onQueued = { _state.update { it.copy(queued = true) } },
-                onToken = { piece ->
-                    _state.update { it.copy(answer = it.answer + piece, queued = false) }
-                    if (_state.value.speechEnabled) {
-                        sentences.append(piece).forEach(speaker::say)
-                    }
-                },
             )
-            // The final sentence usually has no trailing space, so it never triggers a
-            // boundary while streaming and has to be flushed explicitly.
-            if (_state.value.speechEnabled) sentences.flush()?.let(speaker::say)
+
             _state.update {
                 it.copy(
                     phase = Phase.Idle,
-                    answer = answer.text,
-                    lastAnswerSeconds = answer.latencySeconds,
+                    answer = answer.answer,
+                    answerRoute = answer.route,
                 )
             }
-        } catch (e: VlmException) {
-            closeVlm()
-            _state.update {
-                it.copy(phase = Phase.Idle, error = describe(e))
+            if (_state.value.speechEnabled) {
+                sentences.append(answer.answer).forEach(speaker::say)
+                sentences.flush()?.let(speaker::say)
             }
+        } catch (e: TransportException) {
+            closeAll()
+            _state.update { it.copy(phase = Phase.Idle, error = describeTransport(e)) }
+        } catch (e: VlmException) {
+            closeAll()
+            _state.update { it.copy(phase = Phase.Idle, error = describeVlm(e)) }
         } catch (e: Exception) {
-            closeVlm()
-            Log.e(TAG, "board request failed", e)
-            _state.update { it.copy(phase = Phase.Idle, error = "Board error: ${e.message}") }
+            closeAll()
+            Log.e(TAG, "request failed", e)
+            _state.update { it.copy(phase = Phase.Idle, error = "Failed: ${e.message}") }
         }
     }
 
-    /** Connection failures are almost always Tailscale, not the board — say so. */
-    private fun describe(e: VlmException): String = when (e.code) {
-        "connect" -> "Can't reach the board. Check Tailscale is connected on this phone " +
-            "and that iq9 appears in its device list. (${e.message})"
+    /** Runs the preflight and publishes a per-link report. */
+    fun runHealthCheck() {
+        viewModelScope.launch {
+            _state.update { it.copy(health = "checking…", healthy = false) }
+            val config = VlmConfig.load(getApplication())
+            if (config == null) {
+                _state.update { it.copy(health = "no vlm.properties on the device") }
+                return@launch
+            }
+            val report = withContext(Dispatchers.IO) { SystemHealth.check(config) }
+            _state.update { it.copy(health = report.summary(), healthy = report.healthy) }
+        }
+    }
+
+    private fun describeTransport(e: TransportException): String = when (e.code) {
+        "connect", "closed" ->
+            "Can't reach the laptop. Check Tailscale, and that stream_transport is " +
+                "running on qcworkshop3. (${e.message})"
+        "auth" -> "The laptop rejected the token in vlm.properties."
+        "sequence" -> "Context stream out of sync: ${e.message}"
+        else -> "Laptop: ${e.message}"
+    }
+
+    private fun describeVlm(e: VlmException): String = when (e.code) {
+        "connect" -> "Can't reach the board. Check Tailscale and that iq9 appears in it."
         "auth" -> "The board rejected the token in vlm.properties."
-        else -> "${e.code}: ${e.message}"
+        else -> "Board: ${e.code} — ${e.message}"
     }
 
     fun cancelRecording() {
@@ -348,6 +486,13 @@ class RecordViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(speechEnabled = enabled) }
     }
 
+    /** Cycles Auto → Light → Dark, which needs no menu and no extra screen. */
+    fun cycleTheme() {
+        val next = _state.value.themeMode.next()
+        prefs.edit().putString(KEY_THEME, next.name).apply()
+        _state.update { it.copy(themeMode = next) }
+    }
+
     fun dismissError() = _state.update { it.copy(error = null, warning = null) }
 
     private fun saveForDebugging(recording: Recording): String? = try {
@@ -359,9 +504,11 @@ class RecordViewModel(app: Application) : AndroidViewModel(app) {
         null
     }
 
-    private fun closeVlm() {
+    private fun closeAll() {
         runCatching { vlm?.close() }
+        runCatching { textQa?.close() }
         vlm = null
+        textQa = null
         uploadedMedia = null
     }
 
@@ -369,13 +516,28 @@ class RecordViewModel(app: Application) : AndroidViewModel(app) {
         recorder.cancel()
         transcriber.close()
         speaker.close()
-        closeVlm()
+        closeAll()
         super.onCleared()
     }
 
     companion object {
         private const val TAG = "RecordViewModel"
         const val LAST_RECORDING = "last_recording.wav"
+        private const val KEY_THEME = "theme_mode"
+
+        /**
+         * Sent with the media so the board produces a description for the laptop to
+         * answer from. The board is never asked the user's question — only this.
+         *
+         * Deliberately terse. An earlier "describe this in detail, list everything"
+         * prompt generated a 512-token answer and took **161 s** on this board; a bounded
+         * request comes back in seconds. Short labelled facts are also better material
+         * for the extractive reader downstream, which answers by copying a span out of
+         * this text rather than reasoning over it.
+         */
+        const val NARRATION_PROMPT =
+            "Describe what is in this media. Include any visible text, and name objects " +
+                "and people. At most six short lines. No preamble."
 
         /** Server default; 6 frames over a 10 s clip is one every ~1.7 s. */
         const val VIDEO_FRAMES = 6
