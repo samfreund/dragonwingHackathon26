@@ -44,6 +44,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import com.example.dragonassist.MediaKind
 import com.example.dragonassist.Phase
 import com.example.dragonassist.RecordViewModel
 
@@ -75,6 +76,10 @@ fun RecordScreen(
         ActivityResultContracts.TakePicture()
     ) { saved -> if (saved) viewModel.onPhotoCaptured() }
 
+    val recordVideo = rememberLauncherForActivityResult(
+        com.example.dragonassist.vlm.CaptureVideoLimited()
+    ) { saved -> if (saved) viewModel.onVideoCaptured() }
+
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -95,18 +100,34 @@ fun RecordScreen(
 
         Spacer(Modifier.height(16.dp))
 
-        PhotoPanel(
-            photoPath = state.photoPath,
-            photoKb = state.photoKb,
-            onCapture = { takePhoto.launch(viewModel.newPhotoTarget()) },
+        MediaPanel(
+            previewPath = state.previewPath,
+            label = state.mediaLabel,
+            isVideo = state.mediaKind == MediaKind.Video,
+            uploading = state.phase == Phase.Uploading,
+            uploadProgress = state.uploadProgress,
+            onPhoto = { takePhoto.launch(viewModel.newPhotoTarget()) },
+            onVideo = { recordVideo.launch(viewModel.newVideoTarget()) },
         )
+
+        state.warning?.let { warning ->
+            Spacer(Modifier.height(8.dp))
+            Card(
+                Modifier.fillMaxWidth(),
+                colors = androidx.compose.material3.CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                ),
+            ) {
+                Text(warning, Modifier.padding(12.dp), style = MaterialTheme.typography.bodySmall)
+            }
+        }
 
         Spacer(Modifier.height(20.dp))
 
         MicButton(
             phase = state.phase,
             level = state.level,
-            enabled = state.hasPhoto,
+            enabled = state.hasMedia,
             onClick = {
                 when (state.phase) {
                     Phase.Idle ->
@@ -123,12 +144,12 @@ fun RecordScreen(
 
         Text(
             text = when {
-                !state.hasPhoto -> "Take a photo first"
+                !state.hasMedia -> "Capture a photo or video first"
                 state.phase == Phase.Idle && !hasMicPermission -> "Tap to allow the microphone"
                 state.phase == Phase.Idle -> "Hold a question in mind, then tap"
                 state.phase == Phase.Recording -> "Listening — tap to ask"
                 state.phase == Phase.Transcribing -> "Transcribing on the NPU…"
-                state.phase == Phase.Uploading -> "Sending the photo to the board…"
+                state.phase == Phase.Uploading -> "Sending to the board…"
                 state.phase == Phase.Answering ->
                     if (state.queued) "Board is busy — queued" else "Thinking…"
                 else -> ""
@@ -191,28 +212,62 @@ fun RecordScreen(
 }
 
 @Composable
-private fun PhotoPanel(photoPath: String?, photoKb: Int, onCapture: () -> Unit) {
+private fun MediaPanel(
+    previewPath: String?,
+    label: String,
+    isVideo: Boolean,
+    uploading: Boolean,
+    uploadProgress: Float,
+    onPhoto: () -> Unit,
+    onVideo: () -> Unit,
+) {
     Card(Modifier.fillMaxWidth()) {
         Column(
             Modifier.padding(12.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            if (photoPath != null) {
-                val bitmap = remember(photoPath) {
-                    android.graphics.BitmapFactory.decodeFile(photoPath)
+            if (previewPath != null) {
+                // Keyed on the path so a retake re-decodes rather than showing the old frame.
+                val bitmap = remember(previewPath, label) {
+                    android.graphics.BitmapFactory.decodeFile(previewPath)
                 }
                 if (bitmap != null) {
-                    Image(
-                        bitmap = bitmap.asImageBitmap(),
-                        contentDescription = "Captured photo",
-                        contentScale = ContentScale.Fit,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(200.dp)
-                            .clip(RoundedCornerShape(8.dp)),
-                    )
+                    Box {
+                        Image(
+                            bitmap = bitmap.asImageBitmap(),
+                            contentDescription = if (isVideo) "Video frame" else "Captured photo",
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(200.dp)
+                                .clip(RoundedCornerShape(8.dp)),
+                        )
+                        if (isVideo) {
+                            Text(
+                                text = "▶ video",
+                                style = MaterialTheme.typography.labelSmall,
+                                modifier = Modifier.padding(8.dp),
+                            )
+                        }
+                    }
                     Spacer(Modifier.height(8.dp))
                 }
+            }
+
+            // Only meaningful for video: a photo goes up in a single inline message.
+            if (uploading && isVideo) {
+                LinearProgressIndicator(
+                    progress = { uploadProgress },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(6.dp),
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Uploading ${(uploadProgress * 100).toInt()}%",
+                    style = MaterialTheme.typography.labelSmall,
+                )
+                Spacer(Modifier.height(8.dp))
             }
 
             Row(
@@ -221,12 +276,13 @@ private fun PhotoPanel(photoPath: String?, photoKb: Int, onCapture: () -> Unit) 
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    text = if (photoPath == null) "No photo yet" else "Photo · ${photoKb} KB",
+                    text = label.ifEmpty { "Nothing captured yet" },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                Button(onClick = onCapture) {
-                    Text(if (photoPath == null) "Take photo" else "Retake")
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = onVideo, enabled = !uploading) { Text("Video") }
+                    Button(onClick = onPhoto, enabled = !uploading) { Text("Photo") }
                 }
             }
         }

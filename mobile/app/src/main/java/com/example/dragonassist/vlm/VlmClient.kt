@@ -8,12 +8,15 @@ import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okio.ByteString
+import okio.ByteString.Companion.toByteString
 import org.json.JSONObject
 import java.io.Closeable
+import java.io.File
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
 
@@ -135,6 +138,76 @@ class VlmClient(private val config: VlmConfig) : Closeable {
     }
 
     /**
+     * Streams a file to the board as an upload header followed by raw binary frames.
+     *
+     * This is the path for video, which is far too large for the inline base64 form. The
+     * server counts bytes and considers the upload finished the moment the running total
+     * reaches the declared `size`, so that number must be exact — short and it waits
+     * forever, long and it aborts the whole upload.
+     *
+     * @param frames how many stills to sample from a video (server default 6, max 12).
+     * @param strategy `"frames"` for separate images, `"sheet"` to tile them into one.
+     * @param onProgress called with bytes actually on the wire, and the total.
+     */
+    suspend fun uploadFile(
+        file: File,
+        name: String = file.name,
+        frames: Int? = null,
+        strategy: String? = null,
+        onProgress: (sent: Long, total: Long) -> Unit = { _, _ -> },
+    ): JSONObject {
+        val ws = socket ?: throw VlmException("Not connected", "connect")
+        val total = file.length()
+        require(total > 0) { "file is empty: $file" }
+
+        send(
+            JSONObject()
+                .put("type", "upload")
+                .put("name", name)
+                .put("size", total)
+                .apply {
+                    frames?.let { put("frames", it) }
+                    strategy?.let { put("strategy", it) }
+                }
+        )
+
+        var offered = 0L
+        file.inputStream().buffered().use { input ->
+            val buffer = ByteArray(CHUNK_BYTES)
+            while (true) {
+                val read = input.read(buffer)
+                if (read <= 0) break
+
+                if (!ws.send(buffer.toByteString(0, read))) {
+                    throw VlmException("Socket closed mid-upload at $offered/$total", "connect")
+                }
+                offered += read
+
+                // OkHttp's send() only *queues*. Without waiting for the queue to drain,
+                // the entire clip ends up buffered in memory — which defeats the point of
+                // streaming and can OOM on a large video.
+                while (ws.queueSize() > MAX_QUEUED_BYTES) {
+                    delay(DRAIN_POLL_MS)
+                }
+                onProgress((offered - ws.queueSize()).coerceAtLeast(0L), total)
+            }
+        }
+
+        check(offered == total) {
+            "read $offered bytes but the file declared $total — it changed underneath us"
+        }
+
+        // Let the tail flush before waiting on the server, so progress reaches 100%
+        // rather than stalling at 95% while the last chunks are still queued.
+        while (ws.queueSize() > 0) delay(DRAIN_POLL_MS)
+        onProgress(total, total)
+
+        val media = await("media", ignore = setOf("progress"))
+        Log.i(TAG, "media ready: ${media.optString("description")}")
+        return media
+    }
+
+    /**
      * Asks a question about the uploaded media.
      *
      * @param onToken called for each streamed fragment, in arrival order.
@@ -232,8 +305,8 @@ class VlmClient(private val config: VlmConfig) : Closeable {
         http.dispatcher.executorService.shutdown()
     }
 
-    private companion object {
-        const val TAG = "VlmClient"
+    companion object {
+        private const val TAG = "VlmClient"
         const val CONNECT_TIMEOUT_MS = 20_000L
 
         // Inference on the board is ~10s and a queued request waits behind another,
@@ -243,5 +316,14 @@ class VlmClient(private val config: VlmConfig) : Closeable {
         // Server caps a message at 16 MB; base64 inflates by 4/3, so keep the raw
         // image comfortably below that.
         const val MAX_INLINE_BYTES = 8 * 1024 * 1024
+
+        // Well under the server's 16 MB per-frame cap, and small enough that the
+        // progress bar moves smoothly rather than in visible jumps.
+        const val CHUNK_BYTES = 256 * 1024
+
+        // Backpressure threshold: allow ~2 MB in flight, then wait. Enough to keep the
+        // link saturated without buffering the file.
+        const val MAX_QUEUED_BYTES = 2L * 1024 * 1024
+        const val DRAIN_POLL_MS = 15L
     }
 }
