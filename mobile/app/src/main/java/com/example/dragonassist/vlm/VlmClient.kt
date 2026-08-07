@@ -71,6 +71,7 @@ class VlmClient(private val config: VlmConfig) : Closeable {
                 }
 
                 override fun onMessage(webSocket: WebSocket, text: String) {
+                    com.example.dragonassist.net.Wire.inbound("iq9", text)
                     runCatching { JSONObject(text) }
                         .onSuccess { inbox.trySend(Frame.Text(it)) }
                         .onFailure { Log.w(TAG, "unparseable frame: ${text.take(120)}") }
@@ -178,6 +179,7 @@ class VlmClient(private val config: VlmConfig) : Closeable {
                 val read = input.read(buffer)
                 if (read <= 0) break
 
+                if (offered == 0L) com.example.dragonassist.net.Wire.binary("iq9", read)
                 if (!ws.send(buffer.toByteString(0, read))) {
                     throw VlmException("Socket closed mid-upload at $offered/$total", "connect")
                 }
@@ -264,6 +266,7 @@ class VlmClient(private val config: VlmConfig) : Closeable {
     }
 
     private fun send(payload: JSONObject) {
+        com.example.dragonassist.net.Wire.out("iq9", payload.toString())
         val ws = socket ?: throw VlmException("Not connected", "connect")
         if (!ws.send(payload.toString())) {
             throw VlmException("Could not queue message; socket is closing", "connect")

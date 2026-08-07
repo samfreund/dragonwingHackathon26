@@ -1,17 +1,33 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-    The board serves plain ws:// on the tailnet, and Android blocks cleartext by default
-    from API 28. Without this the socket fails with a cleartext-not-permitted error that
-    reads like a connectivity problem but isn't.
+    DragonAssist's services speak plain ws:// over Tailscale, and Android blocks cleartext
+    by default from API 28. Traffic is still encrypted — Tailscale is a WireGuard tunnel —
+    but the app-layer protocol is cleartext, so it needs an explicit exemption.
 
-    Scoped to the machines we actually talk to rather than opening cleartext app-wide:
-    the Tailscale MagicDNS name, and localhost for the adb-reverse development path.
+    Scoped to the machines we actually talk to rather than permitting cleartext app-wide.
+    Android matches on domains, not CIDR ranges, so the 100.64.0.0/10 tailnet cannot be
+    expressed as one rule and each host has to be listed.
+
+    Prefer the MagicDNS names: a host's 100.x address changes if it re-registers, and a
+    stale entry here fails as "CLEARTEXT not permitted", which reads like a firewall or
+    connectivity problem rather than a config one.
 -->
 <network-security-config>
     <domain-config cleartextTrafficPermitted="true">
+        <!-- MagicDNS: covers every host on the tailnet by name -->
+        <domain includeSubdomains="true">ts.net</domain>
+        <domain includeSubdomains="true">tail965456.ts.net</domain>
+
+        <!-- Bare MagicDNS hostnames, used when the search domain applies -->
         <domain includeSubdomains="true">iq9</domain>
-        <domain includeSubdomains="true">iq9.tail965456.ts.net</domain>
-        <domain includeSubdomains="false">100.117.232.121</domain>
+        <domain includeSubdomains="true">qcworkshop3</domain>
+
+        <!-- Raw tailnet addresses, for when names don't resolve -->
+        <domain includeSubdomains="false">100.117.232.121</domain>  <!-- iq9, VLM -->
+        <domain includeSubdomains="false">100.68.62.79</domain>     <!-- qcworkshop3 -->
+        <domain includeSubdomains="false">100.116.138.74</domain>   <!-- dev Mac -->
+
+        <!-- adb reverse, for developing against a service on the workstation -->
         <domain includeSubdomains="false">localhost</domain>
         <domain includeSubdomains="false">127.0.0.1</domain>
     </domain-config>

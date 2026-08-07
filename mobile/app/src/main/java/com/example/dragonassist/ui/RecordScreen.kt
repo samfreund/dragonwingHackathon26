@@ -29,6 +29,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -88,7 +89,17 @@ fun RecordScreen(
             .verticalScroll(rememberScrollState()),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Text("dragonAssist", style = MaterialTheme.typography.headlineMedium)
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Spacer(Modifier.size(64.dp))   // balances the button so the title stays centred
+            Text("dragonAssist", style = MaterialTheme.typography.headlineMedium)
+            TextButton(onClick = viewModel::cycleTheme) {
+                Text(state.themeMode.label, style = MaterialTheme.typography.labelMedium)
+            }
+        }
         Text(
             text = listOfNotNull(
                 state.engine.ifEmpty { null },
@@ -106,7 +117,7 @@ fun RecordScreen(
             previewPath = state.previewPath,
             label = state.mediaLabel,
             isVideo = state.mediaKind == MediaKind.Video,
-            uploading = state.phase == Phase.Uploading,
+            uploading = state.hasMedia && !state.mediaSent,
             uploadProgress = state.uploadProgress,
             onPhoto = { takePhoto.launch(viewModel.newPhotoTarget()) },
             onVideo = { recordVideo.launch(viewModel.newVideoTarget()) },
@@ -129,7 +140,7 @@ fun RecordScreen(
         MicButton(
             phase = state.phase,
             level = state.level,
-            enabled = state.hasMedia,
+            enabled = state.hasMedia && state.mediaSent,
             onClick = {
                 when (state.phase) {
                     Phase.Idle ->
@@ -147,6 +158,8 @@ fun RecordScreen(
         Text(
             text = when {
                 !state.hasMedia -> "Capture a photo or video first"
+                state.phase == Phase.Narrating -> "The board is describing it…"
+                !state.mediaSent -> "Sending to the board…"
                 state.phase == Phase.Idle && !hasMicPermission -> "Tap to allow the microphone"
                 state.phase == Phase.Idle -> "Hold a question in mind, then tap"
                 state.phase == Phase.Recording -> "Listening — tap to ask"
@@ -329,7 +342,14 @@ private fun MicButton(phase: Phase, level: Float, enabled: Boolean, onClick: () 
             onClick = onClick,
             enabled = enabled && !busy,
             shape = CircleShape,
-            colors = ButtonDefaults.buttonColors(containerColor = container),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = container,
+                // Material's default disabled colours are 12% alpha, which disappears
+                // entirely against a dark background. Keep the disabled button legible:
+                // "you can't press this yet" must still read as a button.
+                disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+            ),
             modifier = Modifier.fillMaxSize(),
         ) {
             if (busy) {
