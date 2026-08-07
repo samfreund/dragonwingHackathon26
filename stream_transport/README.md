@@ -2,7 +2,8 @@
 
 One laptop service accepts continuous VLM text from IQ9 and questions from the
 phone. IQ9 text is appended verbatim to one durable, unbounded file per video.
-Phone queries and results are persisted so answers survive disconnects.
+The latest accepted question for each video is stored as plain UTF-8 text at
+`received/<video_id>/query.txt`.
 
 ## Run on `qcworkshop3`
 
@@ -35,7 +36,7 @@ Configuration:
 | `DRAGONASSIST_STREAM_PORT` | `8001` | Shared WebSocket port |
 | `DRAGONASSIST_STREAM_TOKEN` | required off loopback | IQ9 secret |
 | `DRAGONASSIST_PHONE_TOKEN` | required off loopback | Phone secret |
-| `DRAGONASSIST_STREAM_ROOT` | `received` | Context and broker storage |
+| `DRAGONASSIST_STREAM_ROOT` | `received` | Context and query text storage |
 | `DRAGONASSIST_STREAM_MAX_MESSAGE_BYTES` | `1048576` | Per-frame limit |
 
 Restrict Windows Firewall TCP 8001 to Tailscale. Never commit tokens or put
@@ -88,9 +89,9 @@ An IQ9 socket carries one video. Messages are `start`, `text`, and optional
 sent only after the UTF-8 text and state are durable.
 
 A phone starts with `phone_start`, submits `query`, receives `query_ack`, then
-receives a pushed `query_result`. After reconnecting, `query_status` retrieves
-a stored result. Stable request IDs make retries idempotent. IQ9 and phone
-tokens are deliberately not interchangeable.
+receives a pushed `query_result`. Stable request IDs make retries idempotent
+while the server is running. Other laptop components can read the question
+directly from the matching `query.txt` file.
 
 ## Tests
 

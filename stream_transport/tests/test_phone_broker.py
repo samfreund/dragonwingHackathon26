@@ -20,9 +20,24 @@ class PhoneBrokerTests(unittest.TestCase):
         first = self.broker.submit("request-1", "phone-1", "video-1", "What happened?")
         duplicate = self.broker.submit("request-1", "phone-1", "video-1", "What happened?")
         self.assertEqual(first, duplicate)
+        query_path = Path(self.temp.name) / "video-1" / "query.txt"
+        self.assertEqual("What happened?\n", query_path.read_text(encoding="utf-8"))
         with self.assertRaises(ProtocolError) as raised:
             self.broker.submit("request-1", "phone-1", "video-1", "Different question")
         self.assertEqual("request_conflict", raised.exception.code)
+
+    def test_query_txt_holds_the_latest_question_for_each_video(self):
+        self.broker.submit("request-1", "phone-1", "video-1", "First question?")
+        self.broker.submit("request-2", "phone-1", "video-1", "Second question?")
+        self.broker.submit("request-3", "phone-1", "video-2", "Other video?")
+        self.assertEqual(
+            "Second question?\n",
+            (Path(self.temp.name) / "video-1" / "query.txt").read_text(encoding="utf-8"),
+        )
+        self.assertEqual(
+            "Other video?\n",
+            (Path(self.temp.name) / "video-2" / "query.txt").read_text(encoding="utf-8"),
+        )
 
     def test_claim_once_and_complete(self):
         self.broker.submit("request-1", "phone-1", "video-1", "What happened?")

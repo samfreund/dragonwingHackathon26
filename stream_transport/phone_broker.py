@@ -1,33 +1,12 @@
 from __future__ import annotations
 
 import json
-import sqlite3
-from contextlib import contextmanager
-from dataclasses import dataclass
+import os
+import threading
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Iterator
 
 from .protocol import ProtocolError, safe_id, video_id
-
-
-SCHEMA = """
-PRAGMA journal_mode=WAL;
-PRAGMA synchronous=FULL;
-
-CREATE TABLE IF NOT EXISTS phone_queries (
-    request_id TEXT PRIMARY KEY,
-    device_id TEXT NOT NULL,
-    video_id TEXT NOT NULL,
-    question TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'pending',
-    answer TEXT,
-    route TEXT,
-    sources_json TEXT NOT NULL DEFAULT '[]',
-    error TEXT,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-"""
 
 
 @dataclass(frozen=True)
@@ -61,23 +40,21 @@ class PhoneQuery:
 
 
 class PhoneQueryBroker:
-    """Durable boundary between phone WebSockets and the laptop QA worker."""
+    """File-based boundary between phone WebSockets and the laptop worker.
+
+    The integration contract is `received/<video_id>/query.txt`. Small JSON
+    state files under `.phone_requests` replace SQLite so the separate server
+    and worker processes can still exchange status and answers.
+    """
 
     def __init__(self, path: Path) -> None:
-        self.path = path.resolve()
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connect() as connection:
-            connection.executescript(SCHEMA)
-
-    @contextmanager
-    def _connect(self) -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(self.path, timeout=30)
-        connection.row_factory = sqlite3.Row
-        try:
-            yield connection
-            connection.commit()
-        finally:
-            connection.close()
+        # Keep the historical constructor shape; the old database filename is
+        # ignored and only its parent storage directory is used.
+        self.root = path.resolve().parent
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.state_root = self.root / ".phone_requests"
+        self.state_root.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
 
     def submit(
         self,
@@ -92,58 +69,72 @@ class PhoneQueryBroker:
         if not isinstance(question, str) or not question.strip():
             raise ProtocolError("invalid_question", "question must be a non-empty string")
 
-        with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            existing = connection.execute(
-                "SELECT * FROM phone_queries WHERE request_id=?", (request_id,)
-            ).fetchone()
+        with self._lock:
+            existing = self._read(request_id)
             if existing is not None:
                 if (
-                    existing["device_id"] != device_id
-                    or existing["video_id"] != video
-                    or existing["question"] != question
+                    existing.device_id != device_id
+                    or existing.video_id != video
+                    or existing.question != question
                 ):
                     raise ProtocolError(
                         "request_conflict",
                         "request_id already exists with different query data",
                     )
-                return self._from_row(existing)
-            connection.execute(
-                """INSERT INTO phone_queries(request_id, device_id, video_id, question)
-                   VALUES (?, ?, ?, ?)""",
-                (request_id, device_id, video, question),
-            )
-            row = connection.execute(
-                "SELECT * FROM phone_queries WHERE request_id=?", (request_id,)
-            ).fetchone()
-        return self._from_row(row)
+                return existing
+
+            query = PhoneQuery(request_id, device_id, video, question, "pending")
+            self._write_query_text(video, question)
+            self._write(query)
+            return query
+
+    def _write_query_text(self, video: str, question: str) -> None:
+        directory = self.root / video
+        directory.mkdir(parents=True, exist_ok=True)
+        self._write_bytes(directory / "query.txt", (question + "\n").encode("utf-8"))
+
+    def _state_path(self, request_id: str) -> Path:
+        return self.state_root / f"{request_id}.json"
+
+    def _read(self, request_id: str) -> PhoneQuery | None:
+        path = self._state_path(request_id)
+        if not path.exists():
+            return None
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["sources"] = tuple(payload.get("sources") or ())
+        return PhoneQuery(**payload)
+
+    def _write(self, query: PhoneQuery) -> None:
+        payload = json.dumps(asdict(query), ensure_ascii=False, separators=(",", ":"))
+        self._write_bytes(self._state_path(query.request_id), payload.encode("utf-8"))
+
+    @staticmethod
+    def _write_bytes(path: Path, payload: bytes) -> None:
+        temporary = path.with_name(
+            f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+        )
+        descriptor = os.open(temporary, os.O_TRUNC | os.O_CREAT | os.O_WRONLY, 0o600)
+        try:
+            os.write(descriptor, payload)
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        os.replace(temporary, path)
 
     def get(self, request_id: str) -> PhoneQuery | None:
         request_id = safe_id(request_id, "request_id")
-        with self._connect() as connection:
-            row = connection.execute(
-                "SELECT * FROM phone_queries WHERE request_id=?", (request_id,)
-            ).fetchone()
-        return self._from_row(row) if row else None
+        with self._lock:
+            return self._read(request_id)
 
     def claim_next(self) -> PhoneQuery | None:
-        with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute(
-                """SELECT * FROM phone_queries WHERE status='pending'
-                   ORDER BY created_at, rowid LIMIT 1"""
-            ).fetchone()
-            if row is None:
-                return None
-            connection.execute(
-                """UPDATE phone_queries SET status='processing', updated_at=CURRENT_TIMESTAMP
-                   WHERE request_id=? AND status='pending'""",
-                (row["request_id"],),
-            )
-            claimed = connection.execute(
-                "SELECT * FROM phone_queries WHERE request_id=?", (row["request_id"],)
-            ).fetchone()
-        return self._from_row(claimed)
+        with self._lock:
+            for path in sorted(self.state_root.glob("*.json"), key=lambda item: item.stat().st_mtime_ns):
+                query = self._read(path.stem)
+                if query is not None and query.status == "pending":
+                    claimed = replace(query, status="processing")
+                    self._write(claimed)
+                    return claimed
+            return None
 
     def complete(
         self,
@@ -158,7 +149,7 @@ class PhoneQueryBroker:
             status="complete",
             answer=str(answer),
             route=route,
-            sources_json=json.dumps(sources or [], ensure_ascii=False),
+            sources=tuple(sources or []),
             error=None,
         )
 
@@ -168,44 +159,18 @@ class PhoneQueryBroker:
             status="failed",
             answer=None,
             route=None,
-            sources_json="[]",
+            sources=(),
             error=str(error),
         )
 
     def _finish(self, request_id: str, **values) -> PhoneQuery:
         request_id = safe_id(request_id, "request_id")
-        with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute(
-                "SELECT * FROM phone_queries WHERE request_id=?", (request_id,)
-            ).fetchone()
-            if row is None:
+        with self._lock:
+            query = self._read(request_id)
+            if query is None:
                 raise KeyError(f"Unknown request_id {request_id}")
-            if row["status"] in {"complete", "failed"}:
-                return self._from_row(row)
-            connection.execute(
-                """UPDATE phone_queries SET status=?, answer=?, route=?, sources_json=?, error=?,
-                   updated_at=CURRENT_TIMESTAMP WHERE request_id=?""",
-                (
-                    values["status"], values["answer"], values["route"],
-                    values["sources_json"], values["error"], request_id,
-                ),
-            )
-            updated = connection.execute(
-                "SELECT * FROM phone_queries WHERE request_id=?", (request_id,)
-            ).fetchone()
-        return self._from_row(updated)
-
-    @staticmethod
-    def _from_row(row: sqlite3.Row) -> PhoneQuery:
-        return PhoneQuery(
-            request_id=row["request_id"],
-            device_id=row["device_id"],
-            video_id=row["video_id"],
-            question=row["question"],
-            status=row["status"],
-            answer=row["answer"],
-            route=row["route"],
-            sources=tuple(json.loads(row["sources_json"])),
-            error=row["error"],
-        )
+            if query.terminal:
+                return query
+            updated = replace(query, **values)
+            self._write(updated)
+            return updated
