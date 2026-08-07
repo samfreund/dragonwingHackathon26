@@ -27,6 +27,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -92,6 +93,7 @@ fun RecordScreen(
             text = listOfNotNull(
                 state.engine.ifEmpty { null },
                 state.vlmModel.substringAfterLast('/').ifEmpty { null },
+                state.speaker.ifEmpty { null },
             ).joinToString(" · ").ifEmpty { "starting…" },
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -194,6 +196,19 @@ fun RecordScreen(
                 container = MaterialTheme.colorScheme.secondaryContainer,
             )
             Spacer(Modifier.height(10.dp))
+        }
+
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("Speak answers", style = MaterialTheme.typography.labelMedium)
+            Spacer(Modifier.size(8.dp))
+            Switch(
+                checked = state.speechEnabled,
+                onCheckedChange = viewModel::setSpeechEnabled,
+            )
         }
 
         if (state.answer.isNotEmpty()) {

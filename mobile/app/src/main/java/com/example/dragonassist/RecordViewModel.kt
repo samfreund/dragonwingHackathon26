@@ -12,6 +12,9 @@ import androidx.lifecycle.viewModelScope
 import com.example.dragonassist.audio.AudioRecorder
 import com.example.dragonassist.audio.Recording
 import com.example.dragonassist.audio.WavWriter
+import com.example.dragonassist.speak.AndroidSpeaker
+import com.example.dragonassist.speak.SentenceBuffer
+import com.example.dragonassist.speak.Speaker
 import com.example.dragonassist.transcribe.StubTranscriber
 import com.example.dragonassist.transcribe.Transcriber
 import com.example.dragonassist.transcribe.TranscriptionException
@@ -54,6 +57,8 @@ data class RecordUiState(
     val vlmModel: String = "",
     val queued: Boolean = false,
     val lastAnswerSeconds: Double = 0.0,
+    val speechEnabled: Boolean = true,
+    val speaker: String = "",
 ) {
     val hasMedia: Boolean get() = mediaKind != null
 }
@@ -75,6 +80,11 @@ class RecordViewModel(app: Application) : AndroidViewModel(app) {
 
     private var pendingCapture: File? = null
 
+    private val speaker: Speaker = AndroidSpeaker(app)
+
+    /** Releases the streamed answer a sentence at a time, so speech starts early. */
+    private val sentences = SentenceBuffer()
+
     private val _state = MutableStateFlow(RecordUiState())
     val state: StateFlow<RecordUiState> = _state.asStateFlow()
 
@@ -82,6 +92,8 @@ class RecordViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             withContext(Dispatchers.IO) { transcriber.prepare() }
             _state.update { it.copy(engine = transcriber.name) }
+            speaker.prepare()
+            _state.update { it.copy(speaker = speaker.name) }
         }
     }
 
@@ -205,6 +217,7 @@ class RecordViewModel(app: Application) : AndroidViewModel(app) {
         if (_state.value.phase != Phase.Recording) return
 
         val recording = recorder.stop()
+        speaker.stop()
         _state.update { it.copy(phase = Phase.Transcribing, level = 0f) }
 
         viewModelScope.launch {
@@ -279,13 +292,22 @@ class RecordViewModel(app: Application) : AndroidViewModel(app) {
             }
 
             _state.update { it.copy(phase = Phase.Answering, answer = "", queued = false) }
+            speaker.stop()
+            sentences.clear()
+
             val answer = client.ask(
                 prompt = question,
                 onQueued = { _state.update { it.copy(queued = true) } },
                 onToken = { piece ->
                     _state.update { it.copy(answer = it.answer + piece, queued = false) }
+                    if (_state.value.speechEnabled) {
+                        sentences.append(piece).forEach(speaker::say)
+                    }
                 },
             )
+            // The final sentence usually has no trailing space, so it never triggers a
+            // boundary while streaming and has to be flushed explicitly.
+            if (_state.value.speechEnabled) sentences.flush()?.let(speaker::say)
             _state.update {
                 it.copy(
                     phase = Phase.Idle,
@@ -318,6 +340,14 @@ class RecordViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(phase = Phase.Idle, level = 0f) }
     }
 
+    fun setSpeechEnabled(enabled: Boolean) {
+        if (!enabled) {
+            speaker.stop()
+            sentences.clear()
+        }
+        _state.update { it.copy(speechEnabled = enabled) }
+    }
+
     fun dismissError() = _state.update { it.copy(error = null, warning = null) }
 
     private fun saveForDebugging(recording: Recording): String? = try {
@@ -338,6 +368,7 @@ class RecordViewModel(app: Application) : AndroidViewModel(app) {
     override fun onCleared() {
         recorder.cancel()
         transcriber.close()
+        speaker.close()
         closeVlm()
         super.onCleared()
     }
