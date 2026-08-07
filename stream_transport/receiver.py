@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import hmac
 import json
 import os
 from dataclasses import dataclass
@@ -22,15 +21,13 @@ from .storage import TextStore
 class ReceiverConfig:
     host: str = os.getenv("DRAGONASSIST_STREAM_HOST", "0.0.0.0")
     port: int = int(os.getenv("DRAGONASSIST_STREAM_PORT", "8001"))
-    token: str = os.getenv("DRAGONASSIST_STREAM_TOKEN", "")
     storage_root: Path = Path(os.getenv("DRAGONASSIST_STREAM_ROOT", "received"))
     max_message_bytes: int = int(os.getenv("DRAGONASSIST_STREAM_MAX_MESSAGE_BYTES", str(1024 * 1024)))
 
 
 class StreamReceiver:
-    def __init__(self, store: TextStore, token: str = "") -> None:
+    def __init__(self, store: TextStore) -> None:
         self.store = store
-        self.token = token
         self._active: set[str] = set()
         self._active_lock = asyncio.Lock()
 
@@ -40,8 +37,6 @@ class StreamReceiver:
             try:
                 first = await asyncio.wait_for(websocket.recv(), timeout=10)
                 start = parse_start(parse_message(first))
-                if self.token and not hmac.compare_digest(start.token, self.token):
-                    raise ProtocolError("auth", "Bad token")
                 async with self._active_lock:
                     if start.video_id in self._active:
                         raise ProtocolError("video_busy", "Another connection is streaming this video")
@@ -123,9 +118,7 @@ class StreamReceiver:
 
 
 async def run(config: ReceiverConfig) -> None:
-    if not config.token and config.host not in {"127.0.0.1", "localhost", "::1"}:
-        raise SystemExit("DRAGONASSIST_STREAM_TOKEN is required when binding beyond loopback")
-    receiver = StreamReceiver(TextStore(config.storage_root), config.token)
+    receiver = StreamReceiver(TextStore(config.storage_root))
     async with websocket_serve(
         receiver.handler,
         config.host,
@@ -153,7 +146,6 @@ def main() -> None:
         asyncio.run(run(ReceiverConfig(
             host=args.host,
             port=args.port,
-            token=defaults.token,
             storage_root=args.storage_root,
             max_message_bytes=defaults.max_message_bytes,
         )))

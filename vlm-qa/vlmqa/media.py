@@ -164,12 +164,24 @@ def prepare_image(path: Path, max_edge: int, out_dir: Path) -> Path:
     return out
 
 
-def sample_frames(path: Path, count: int, max_edge: int, out_dir: Path) -> list[Frame]:
+def sample_frames(
+    path: Path,
+    count: int,
+    max_edge: int,
+    out_dir: Path,
+    *,
+    window: tuple[float, float] | None = None,
+) -> list[Frame]:
     """Extract `count` stills spread evenly across the video.
 
     Each frame is taken from the midpoint of its slice rather than the
     boundary, so the first frame isn't a black lead-in and the last isn't
     past the final decodable packet.
+
+    `window` restricts sampling to a `(start_s, end_s)` span, which is how the
+    publisher captions a long video piece by piece. Timestamps on the returned
+    frames stay absolute, so a caption can be labelled with its real position
+    in the video rather than an offset into the window.
     """
     if count < 1:
         raise MediaError("Frame count must be at least 1")
@@ -178,9 +190,19 @@ def sample_frames(path: Path, count: int, max_edge: int, out_dir: Path) -> list[
     if info.duration_s <= 0:
         raise MediaError(f"Could not determine duration of {path.name}")
 
+    start_s, end_s = window or (0.0, info.duration_s)
+    start_s = max(0.0, start_s)
+    end_s = min(info.duration_s, end_s)
+    if end_s <= start_s:
+        raise MediaError(
+            f"Empty sampling window [{start_s:.3f}, {end_s:.3f}) in a "
+            f"{info.duration_s:.1f}s video"
+        )
+    span = end_s - start_s
+
     frames: list[Frame] = []
     for i in range(count):
-        ts = info.duration_s * (i + 0.5) / count
+        ts = start_s + span * (i + 0.5) / count
         out = out_dir / f"frame_{i:03d}.jpg"
         # -ss before -i seeks by keyframe (fast); accurate enough for sampling.
         _run([

@@ -22,8 +22,6 @@ from .storage import TextStore
 class ServerConfig:
     host: str = os.getenv("DRAGONASSIST_STREAM_HOST", "0.0.0.0")
     port: int = int(os.getenv("DRAGONASSIST_STREAM_PORT", "8001"))
-    stream_token: str = os.getenv("DRAGONASSIST_STREAM_TOKEN", "")
-    phone_token: str = os.getenv("DRAGONASSIST_PHONE_TOKEN", "")
     storage_root: Path = Path(os.getenv("DRAGONASSIST_STREAM_ROOT", "received"))
     max_message_bytes: int = int(os.getenv("DRAGONASSIST_STREAM_MAX_MESSAGE_BYTES", str(1024 * 1024)))
 
@@ -51,18 +49,10 @@ class CombinedServer:
 def build(config: ServerConfig) -> tuple[CombinedServer, PhoneQueryBroker]:
     store = TextStore(config.storage_root)
     broker = PhoneQueryBroker(config.storage_root / "phone_queries.sqlite3")
-    return CombinedServer(
-        StreamReceiver(store, config.stream_token),
-        PhoneReceiver(broker, config.phone_token),
-    ), broker
+    return CombinedServer(StreamReceiver(store), PhoneReceiver(broker)), broker
 
 
 async def run(config: ServerConfig) -> None:
-    if config.host not in {"127.0.0.1", "localhost", "::1"}:
-        if not config.stream_token:
-            raise SystemExit("DRAGONASSIST_STREAM_TOKEN is required off loopback")
-        if not config.phone_token:
-            raise SystemExit("DRAGONASSIST_PHONE_TOKEN is required off loopback")
     combined, _ = build(config)
     async with websocket_serve(
         combined.handler,
@@ -90,8 +80,6 @@ def main() -> None:
     config = ServerConfig(
         host=args.host,
         port=args.port,
-        stream_token=defaults.stream_token,
-        phone_token=defaults.phone_token,
         storage_root=args.storage_root,
         max_message_bytes=defaults.max_message_bytes,
     )

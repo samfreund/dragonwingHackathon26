@@ -42,12 +42,6 @@ from .media import (
     workspace,
 )
 
-SYSTEM_PROMPT = (
-    "You are a careful visual analyst. Answer only from what is visible in the "
-    "images provided. If the answer is not visible, say so plainly rather than "
-    "guessing. Be specific and concise."
-)
-
 
 @dataclass
 class Prepared:
@@ -73,6 +67,7 @@ def prepare(
     strategy: str,
     max_edge: int,
     max_frames: int | None = None,
+    window: tuple[float, float] | None = None,
 ) -> Prepared:
     """Turn a media file into the list of images to send."""
     kind = classify(media)
@@ -98,7 +93,7 @@ def prepare(
         )
 
     info = probe_video(media)
-    sampled = sample_frames(media, frames, max_edge, scratch)
+    sampled = sample_frames(media, frames, max_edge, scratch, window=window)
     stamps = ", ".join(f.label for f in sampled)
 
     if strategy == "frames":
@@ -162,6 +157,7 @@ def ask_about(
     client: VLMClient | None = None,
     stream: bool = False,
     on_token=None,
+    window: tuple[float, float] | None = None,
 ) -> tuple[Answer, Prepared]:
     """One-shot: prepare the media, ask the question, return the answer."""
     cfg = settings or default_settings
@@ -179,10 +175,11 @@ def ask_about(
             strategy=strategy,
             max_edge=cfg.max_image_edge,
             max_frames=cfg.max_frames(),
+            window=window,
         )
         content = build_content(prepared, question)
         answer = vlm.ask(
-            content, system=SYSTEM_PROMPT, stream=stream, on_token=on_token
+            content, system=cfg.system_prompt, stream=stream, on_token=on_token
         )
     return answer, prepared
 
@@ -230,7 +227,7 @@ class Session:
 
         answer = self.client.ask(
             content,
-            system=SYSTEM_PROMPT,
+            system=self.settings.system_prompt,
             history=self._history,
             stream=stream,
             on_token=on_token,

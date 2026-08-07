@@ -59,6 +59,20 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--port", "-p", type=int, default=None,
                        help=f"Port to listen on (default {settings.ws_port}).")
 
+    publish = sub.add_parser(
+        "publish",
+        help="Caption a video window by window and stream the text to the laptop.",
+    )
+    _add_media_args(publish)
+    publish.add_argument("--url", required=True,
+                         help="Receiver endpoint, e.g. ws://qcworkshop3:8001/v1/iq9")
+    publish.add_argument("--video-id", required=True,
+                         help="Names the context file on the laptop; reuse it to resume.")
+    publish.add_argument("--window", type=float, default=10.0, metavar="SECONDS",
+                         help="Video seconds per caption (default 10).")
+    publish.add_argument("--prompt", default=None,
+                         help="Override the captioning instruction.")
+
     sub.add_parser("status", help="Check the GenieX server and loaded models.")
     return parser
 
@@ -92,8 +106,11 @@ def cmd_status() -> int:
     print(f"models   : {', '.join(models) if models else '(none reported)'}")
     print(f"configured: {cfg.model}")
     if models and cfg.model not in models:
+        # cfg.model already carries its precision suffix; the pull hint needs the
+        # bare name plus a lowercase precision.
+        name, _, precision = cfg.model.partition(":")
         print(f"\nWarning: {cfg.model} is not in the server's model list. Pull it with:\n"
-              f"  geniex pull {cfg.model}:w4a16 --model-type vlm")
+              f"  geniex pull {name}:{(precision or 'w4a16').lower()} --model-type vlm")
     return 0
 
 
@@ -174,6 +191,38 @@ def cmd_chat(args) -> int:
                 print(f"\nerror: {exc}\n", file=sys.stderr)
 
 
+def cmd_publish(args) -> int:
+    import asyncio
+
+    from .config import settings as cfg
+    from .publisher import DEFAULT_PROMPT, PublishError, publish
+
+    def report(window, text: str) -> None:
+        print(text, end="", flush=True)
+
+    try:
+        sent = asyncio.run(publish(
+            args.media,
+            args.url,
+            args.video_id,
+            window_s=args.window,
+            prompt=args.prompt or DEFAULT_PROMPT,
+            frames=args.frames,
+            strategy=args.strategy,
+            settings=cfg,
+            on_caption=report,
+        ))
+    except PublishError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except OSError as exc:
+        print(f"error: cannot reach {args.url} -- {exc}", file=sys.stderr)
+        return 1
+
+    print(f"\n--- published {sent} caption(s) as {args.video_id}", file=sys.stderr)
+    return 0
+
+
 def cmd_serve(args) -> int:
     import asyncio
 
@@ -210,6 +259,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_chat(args)
         if args.command == "serve":
             return cmd_serve(args)
+        if args.command == "publish":
+            return cmd_publish(args)
     except (MediaError, VLMError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

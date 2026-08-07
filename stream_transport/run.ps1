@@ -11,12 +11,6 @@ $ErrorActionPreference = "Stop"
 $Venv = Join-Path $PSScriptRoot ".venv"
 $Python = Join-Path $Venv "Scripts\python.exe"
 
-if (-not $env:DRAGONASSIST_STREAM_TOKEN) {
-    throw "Set DRAGONASSIST_STREAM_TOKEN before exposing the server"
-}
-if (-not $env:DRAGONASSIST_PHONE_TOKEN) {
-    throw "Set DRAGONASSIST_PHONE_TOKEN before exposing the server"
-}
 if (-not (Test-Path $Python)) {
     py -m venv $Venv
 }

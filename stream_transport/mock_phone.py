@@ -11,7 +11,6 @@ from . import PROTOCOL_VERSION
 
 async def ask(
     url: str,
-    token: str,
     device_id: str,
     request_id: str,
     video_id: str,
@@ -23,7 +22,6 @@ async def ask(
         await websocket.send(json.dumps({
             "type": "phone_start",
             "protocol": PROTOCOL_VERSION,
-            "token": token,
             "device_id": device_id,
         }))
         ready = json.loads(await websocket.recv())
@@ -62,7 +60,6 @@ async def ask(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Mock DragonAssist phone")
     parser.add_argument("--url", required=True)
-    parser.add_argument("--token", required=True)
     parser.add_argument("--device-id", default="mock-phone")
     parser.add_argument("--request-id", required=True)
     parser.add_argument("--video-id", required=True)
@@ -71,7 +68,6 @@ def main() -> None:
     args = parser.parse_args()
     result = asyncio.run(ask(
         args.url,
-        args.token,
         args.device_id,
         args.request_id,
         args.video_id,

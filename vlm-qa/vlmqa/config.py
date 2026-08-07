@@ -31,6 +31,21 @@ DEFAULT_CONTEXT_TOKENS = 4096
 TOKENS_PER_IMAGE = 275
 TOKEN_OVERHEAD = 200
 
+# The system message sent with every request in qa.py. Kept short and terse:
+# RecordViewModel's own measurements on this board found that pushing
+# Qwen3-VL-4B W4A16 past a certain instruction/complexity threshold makes it
+# degenerate into repetition or an empty completion rather than answering --
+# the same failure mode documented there for too many image frames at once.
+# A longer, more demanding "describe everything" prompt reproduced that
+# failure (empty answers on video uploads), so this stays close to what was
+# actually verified working on the hardware. Override with VLMQA_SYSTEM_PROMPT
+# to experiment with a more exhaustive style at your own risk.
+DEFAULT_SYSTEM_PROMPT = (
+    "You are a careful visual analyst. Answer only from what is visible in the "
+    "images provided. If the answer is not visible, say so plainly rather than "
+    "guessing. Be specific and concise."
+)
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -41,6 +56,7 @@ class Settings:
     # Generation
     max_tokens: int = int(os.getenv("VLMQA_MAX_TOKENS", "512"))
     temperature: float = float(os.getenv("VLMQA_TEMPERATURE", "0.2"))
+    system_prompt: str = os.getenv("VLMQA_SYSTEM_PROMPT", DEFAULT_SYSTEM_PROMPT)
 
     # Media handling
     max_image_edge: int = int(os.getenv("VLMQA_MAX_IMAGE_EDGE", "896"))
@@ -64,6 +80,15 @@ class Settings:
     ws_port: int = int(os.getenv("VLMQA_WS_PORT", "8765"))
     ws_token: str = os.getenv("VLMQA_WS_TOKEN", "")
     ws_max_upload_mb: int = int(os.getenv("VLMQA_WS_MAX_UPLOAD_MB", "512"))
+
+    # Where captions go when a video is uploaded over the WebSocket. Unset
+    # means the board keeps everything to itself, which is the old behaviour.
+    #
+    # Only text is ever sent: the video stays on this board and is deleted with
+    # the connection's scratch directory. The receiver's protocol cannot carry
+    # a video -- it rejects binary frames outright.
+    publish_url: str = os.getenv("VLMQA_PUBLISH_URL", "")
+    publish_window_s: float = float(os.getenv("VLMQA_PUBLISH_WINDOW", "10"))
     # Cap on a single frame, so one message cannot balloon the process. Big
     # enough for a generous upload chunk or a base64 photo sent in one go.
     ws_max_message_mb: int = int(os.getenv("VLMQA_WS_MAX_MESSAGE_MB", "16"))

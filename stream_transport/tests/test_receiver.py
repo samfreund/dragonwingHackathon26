@@ -17,7 +17,7 @@ class ReceiverTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.store = TextStore(Path(self.temp.name))
-        self.receiver = StreamReceiver(self.store, "secret")
+        self.receiver = StreamReceiver(self.store)
         self.server = await serve(self.receiver.handler, "127.0.0.1", 0)
         port = self.server.sockets[0].getsockname()[1]
         self.url = f"ws://127.0.0.1:{port}"
@@ -27,9 +27,9 @@ class ReceiverTests(unittest.IsolatedAsyncioTestCase):
         await self.server.wait_closed()
         self.temp.cleanup()
 
-    async def start(self, websocket, video="video-1", token="secret"):
+    async def start(self, websocket, video="video-1"):
         await websocket.send(json.dumps({
-            "type": "start", "protocol": 1, "token": token, "video_id": video,
+            "type": "start", "protocol": 1, "video_id": video,
         }))
         return json.loads(await websocket.recv())
 
@@ -57,11 +57,7 @@ class ReceiverTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual("one two", self.store.context_path("video-1").read_text())
 
-    async def test_auth_gap_mismatch_and_path_validation(self):
-        async with connect(self.url) as websocket:
-            error = await self.start(websocket, token="wrong")
-            self.assertEqual("auth", error["code"])
-
+    async def test_gap_mismatch_and_path_validation(self):
         async with connect(self.url) as websocket:
             error = await self.start(websocket, video="../escape")
             self.assertEqual("invalid_video_id", error["code"])
@@ -107,7 +103,6 @@ class ReceiverTests(unittest.IsolatedAsyncioTestCase):
             self.url,
             "mock-video",
             source,
-            token="secret",
             chunk_chars=3,
         )
 

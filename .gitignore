@@ -3,3 +3,10 @@ __pycache__/
 .cache/
 .venv/
 received/
+
+# 249MB NPU model - too large for GitHub (100MB limit); fetch/build locally
+npu_qa/*.onnx
+
+# local safety copies
+stream_transport/backup-*/
+*.backup-*

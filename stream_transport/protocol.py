@@ -64,7 +64,6 @@ def sequence(value: Any, *, allow_zero: bool = False) -> int:
 @dataclass(frozen=True)
 class Start:
     video_id: str
-    token: str
 
 
 def parse_start(message: dict[str, Any]) -> Start:
@@ -76,4 +75,4 @@ def parse_start(message: dict[str, Any]) -> Start:
             f"Supported protocol is {PROTOCOL_VERSION}",
             supported=PROTOCOL_VERSION,
         )
-    return Start(video_id(message.get("video_id")), str(message.get("token") or ""))
+    return Start(video_id(message.get("video_id")))

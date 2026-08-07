@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import hmac
 import json
 
 from websockets.exceptions import ConnectionClosed
@@ -15,13 +14,11 @@ class PhoneReceiver:
     def __init__(
         self,
         broker: PhoneQueryBroker,
-        token: str,
         *,
         max_question_chars: int = 16_000,
         result_poll_seconds: float = 0.2,
     ) -> None:
         self.broker = broker
-        self.token = token
         self.max_question_chars = max_question_chars
         self.result_poll_seconds = result_poll_seconds
 
@@ -40,10 +37,6 @@ class PhoneReceiver:
                         f"Supported protocol is {PROTOCOL_VERSION}",
                         supported=PROTOCOL_VERSION,
                     )
-                if self.token and not hmac.compare_digest(
-                    str(first.get("token") or ""), self.token
-                ):
-                    raise ProtocolError("auth", "Bad token")
                 device_id = safe_id(first.get("device_id"), "device_id")
                 await self._send(websocket, {
                     "type": "phone_ready",

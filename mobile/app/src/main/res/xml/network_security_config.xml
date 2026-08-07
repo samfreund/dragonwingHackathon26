@@ -1,17 +1,24 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-    The board serves plain ws:// on the tailnet, and Android blocks cleartext by default
-    from API 28. Without this the socket fails with a cleartext-not-permitted error that
-    reads like a connectivity problem but isn't.
+    The board and the laptop both serve plain ws:// on the tailnet, and Android blocks
+    cleartext by default from API 28. Without this the socket fails with a
+    cleartext-not-permitted error that reads like a connectivity problem but isn't.
 
     Scoped to the machines we actually talk to rather than opening cleartext app-wide:
-    the Tailscale MagicDNS name, and localhost for the adb-reverse development path.
+    the Tailscale MagicDNS names, their tailnet IPs, and localhost for the adb-reverse
+    development path.
+
+    Two hosts, two services: iq9:8765 is the board's VLM (VlmClient), qcworkshop3:8001 is
+    the laptop's query service (AssistClient). Both entries are required.
 -->
 <network-security-config>
     <domain-config cleartextTrafficPermitted="true">
         <domain includeSubdomains="true">iq9</domain>
         <domain includeSubdomains="true">iq9.tail965456.ts.net</domain>
         <domain includeSubdomains="false">100.117.232.121</domain>
+        <domain includeSubdomains="true">qcworkshop3</domain>
+        <domain includeSubdomains="true">qcworkshop3.tail965456.ts.net</domain>
+        <domain includeSubdomains="false">100.68.62.79</domain>
         <domain includeSubdomains="false">localhost</domain>
         <domain includeSubdomains="false">127.0.0.1</domain>
     </domain-config>

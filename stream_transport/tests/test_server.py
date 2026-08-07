@@ -18,8 +18,6 @@ class CombinedServerTests(unittest.IsolatedAsyncioTestCase):
         config = ServerConfig(
             host="127.0.0.1",
             port=0,
-            stream_token="iq9-secret",
-            phone_token="phone-secret",
             storage_root=Path(self.temp.name),
         )
         self.combined, self.broker = build(config)
@@ -34,11 +32,10 @@ class CombinedServerTests(unittest.IsolatedAsyncioTestCase):
     def url(self, path: str) -> str:
         return f"ws://127.0.0.1:{self.port}{path}"
 
-    async def phone_start(self, websocket, token="phone-secret", device="phone-1"):
+    async def phone_start(self, websocket, device="phone-1"):
         await websocket.send(json.dumps({
             "type": "phone_start",
             "protocol": 1,
-            "token": token,
             "device_id": device,
         }))
         return json.loads(await websocket.recv())
@@ -52,16 +49,20 @@ class CombinedServerTests(unittest.IsolatedAsyncioTestCase):
         }))
         return json.loads(await websocket.recv())
 
-    async def test_paths_and_separate_tokens(self):
-        async with connect(self.url("/v1/phone")) as phone:
-            self.assertEqual("auth", (await self.phone_start(phone, token="iq9-secret"))["code"])
-
+    async def test_endpoints_are_not_interchangeable(self):
+        # A phone_start on the IQ9 endpoint, and a start on the phone endpoint,
+        # must each be rejected on shape alone now that no token separates them.
         async with connect(self.url("/v1/iq9")) as iq9:
             await iq9.send(json.dumps({
-                "type": "start", "protocol": 1,
-                "token": "phone-secret", "video_id": "video-1",
+                "type": "phone_start", "protocol": 1, "device_id": "phone-1",
             }))
-            self.assertEqual("auth", json.loads(await iq9.recv())["code"])
+            self.assertEqual("start_required", json.loads(await iq9.recv())["code"])
+
+        async with connect(self.url("/v1/phone")) as phone:
+            await phone.send(json.dumps({
+                "type": "start", "protocol": 1, "video_id": "video-1",
+            }))
+            self.assertEqual("phone_start_required", json.loads(await phone.recv())["code"])
 
         async with connect(self.url("/not-real")) as unknown:
             self.assertEqual("unknown_path", json.loads(await unknown.recv())["code"])
@@ -106,8 +107,7 @@ class CombinedServerTests(unittest.IsolatedAsyncioTestCase):
     async def test_existing_iq9_protocol_remains_available_at_root(self):
         async with connect(self.url("/")) as iq9:
             await iq9.send(json.dumps({
-                "type": "start", "protocol": 1,
-                "token": "iq9-secret", "video_id": "video-1",
+                "type": "start", "protocol": 1, "video_id": "video-1",
             }))
             self.assertEqual("started", json.loads(await iq9.recv())["type"])
             await iq9.send(json.dumps({

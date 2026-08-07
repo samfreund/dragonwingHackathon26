@@ -42,7 +42,17 @@ def run_worker(
             continue
         try:
             context_path = store.context_path(query.video_id)
-            context = context_path.read_text(encoding="utf-8") if context_path.exists() else ""
+            query_path = storage_root / query.video_id / "query.txt"
+            if not query_path.exists():
+                raise FileNotFoundError(f"Phone question not found: {query_path}")
+            if not context_path.exists():
+                raise FileNotFoundError(f"IQ9 context not found: {context_path}")
+            question = query_path.read_text(encoding="utf-8").strip()
+            context = context_path.read_text(encoding="utf-8").strip()
+            if not question:
+                raise ValueError(f"Phone question is empty: {query_path}")
+            if not context:
+                raise ValueError(f"IQ9 context is empty: {context_path}")
             if mock_answer is not None:
                 answer = mock_answer
                 route = "mock"
@@ -50,9 +60,9 @@ def run_worker(
                 if engine is None:
                     engine = _load_hybrid_qa(repo_root)
                 reply = engine.answer(
-                    query.question,
+                    question,
                     context,
-                    context_source=str(context_path),
+                    context_source=f"{query_path} + {context_path}",
                 )
                 answer = reply.answer
                 route = reply.backend

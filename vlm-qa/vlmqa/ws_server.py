@@ -13,7 +13,9 @@ binary frames, so a video costs its own size on the wire rather than the
   client -> server
     {"type":"auth",   "token":"..."}                       if the server has one
     {"type":"upload", "name":"clip.mp4", "size":1048576,   binary frames follow
-                      "frames":8, "strategy":"frames"}
+                      "frames":8, "strategy":"frames",
+                      "video_id":"loading-dock"}          optional; names the
+                                                          transcript upstream
     {"type":"upload", "name":"cat.jpg", "data":"<base64>"} small files, one shot
     {"type":"ask",    "prompt":"What happens?", "stream":true}
     {"type":"reset"}                                       forget media + history
@@ -24,6 +26,9 @@ binary frames, so a video costs its own size on the wire rather than the
     {"type":"ready",    "protocol":1, "model":"...", "defaults":{...}}
     {"type":"progress", "received":N, "size":M}
     {"type":"media",    "kind":"video", "images":6, "frames":[...], ...}
+    {"type":"publishing",     "video_id":"..."}   if VLMQA_PUBLISH_URL is set
+    {"type":"published",      "video_id":"...", "captions":3}
+    {"type":"publish_failed", "video_id":"...", "message":"..."}
     {"type":"queued"}                                      NPU busy elsewhere
     {"type":"token",    "text":"..."}                      streaming only
     {"type":"answer",   "text":"...", "latency_s":4.8, ...}
@@ -45,9 +50,12 @@ import asyncio
 import base64
 import binascii
 import json
+import os
 import re
+import shutil
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 try:  # websockets >= 13 ships the asyncio implementation used here
@@ -66,9 +74,16 @@ from websockets.exceptions import ConnectionClosed
 from .client import Answer, VLMClient, VLMError
 from .config import Settings, settings as default_settings
 from .media import MediaError
+from .publisher import PublishError, publish
 from .qa import Session
 
 PROTOCOL_VERSION = 1
+
+# Publish jobs outlive the connection that triggered them: the phone is free to
+# hang up the moment it has its answer, and captioning the rest of the clip is
+# no longer its business. Holding a strong reference keeps the loop from
+# garbage-collecting a task nobody is awaiting.
+_PUBLISH_JOBS: set[asyncio.Task] = set()
 
 # The client names the file it is sending; only its extension is kept, and
 # only if it is boring. `classify()` falls back to ffprobe when the suffix
@@ -85,6 +100,22 @@ class ProtocolError(ValueError):
 def _suffix_of(name: str) -> str:
     suffix = Path(str(name)).suffix.lower()
     return suffix if _SAFE_SUFFIX.match(suffix) else ".bin"
+
+
+def _safe_video_id(value) -> str:
+    """Coerce a client-supplied id into what the receiver will accept.
+
+    The id names a directory on the laptop, so the receiver enforces
+    `[A-Za-z0-9][A-Za-z0-9._-]{0,127}` and closes the socket on anything else.
+    Rewriting here means a phone sending "My Clip (2).mp4" gets a usable id
+    instead of a disconnect it cannot diagnose. Empty means "pick one for me".
+    """
+    if value is None:
+        return ""
+    cleaned = "".join(
+        c if (c.isalnum() and c.isascii()) or c in "._-" else "-" for c in str(value)
+    ).lstrip("._-")[:128]
+    return cleaned
 
 
 def _int_or_none(value, field: str, *, minimum: int = 1) -> int | None:
@@ -115,11 +146,19 @@ class _Upload:
     copy of it that ffmpeg is only going to read off disk anyway.
     """
 
-    def __init__(self, path: Path, size: int, frames: int | None, strategy: str | None) -> None:
+    def __init__(
+        self,
+        path: Path,
+        size: int,
+        frames: int | None,
+        strategy: str | None,
+        video_id=None,
+    ) -> None:
         self.path = path
         self.size = size
         self.frames = frames
         self.strategy = strategy
+        self.video_id = video_id
         self.received = 0
         self._reported = 0
         self._fh = path.open("wb")
@@ -283,13 +322,16 @@ class _Connection:
         self._discard_media()
         path = self.dir / f"media{_suffix_of(name)}"
 
+        video_id = msg.get("video_id")
+
         if blob is not None:
             path.write_bytes(blob)
             self.log(f"upload {name} ({size} bytes, inline)")
             await self._prepare(path, frames, strategy)
+            await self._maybe_publish(video_id)
             return
 
-        self.upload = _Upload(path, size, frames, strategy)
+        self.upload = _Upload(path, size, frames, strategy, video_id)
         self.log(f"upload {name} ({size} bytes, streaming)")
         await self._send({"type": "progress", "received": 0, "size": size})
 
@@ -317,6 +359,7 @@ class _Connection:
             upload.close()
             self.upload = None
             await self._prepare(upload.path, upload.frames, upload.strategy)
+            await self._maybe_publish(upload.video_id)
 
     async def _on_ask(self, msg: dict) -> None:
         prompt = str(msg.get("prompt") or msg.get("question") or "").strip()
@@ -433,6 +476,77 @@ class _Connection:
             "description": prepared.description,
             "note": "\n".join(filter(None, (note, prepared.note))) or None,
         })
+
+    async def _maybe_publish(self, requested_id) -> None:
+        """Stream captions of the just-uploaded video to the configured receiver.
+
+        Only text leaves this board. The video is captioned here and the
+        captions are sent as JSON text frames; the file itself stays in the
+        scratch directory and dies with the connection.
+
+        The job deliberately outlives this connection. Captioning a clip takes
+        far longer than answering one question, and a phone that uploads, asks,
+        and disconnects should still leave a complete transcript behind.
+        """
+        cfg = self.settings
+        if not cfg.publish_url or self.media is None or self.session is None:
+            return
+        if self.session.prepared.kind != "video":
+            return  # a photo has no windows to walk
+
+        video_id = _safe_video_id(requested_id) or f"upload-{int(time.time())}"
+
+        # Take our own reference to the file before handing off. close() wipes
+        # the connection's scratch directory, and a hard link costs nothing on
+        # the same filesystem, so the job cannot lose the media underneath it.
+        job_dir = Path(tempfile.mkdtemp(prefix="vlmqa-pub-"))
+        target = job_dir / self.media.name
+        try:
+            os.link(self.media, target)
+        except OSError:
+            await asyncio.to_thread(shutil.copy2, self.media, target)
+
+        task = asyncio.create_task(
+            self._publish_job(target, job_dir, video_id),
+            name=f"publish-{video_id}",
+        )
+        _PUBLISH_JOBS.add(task)
+        task.add_done_callback(_PUBLISH_JOBS.discard)
+
+        self.log(f"publishing as {video_id} -> {cfg.publish_url}")
+        await self._send_quietly({"type": "publishing", "video_id": video_id})
+
+    async def _publish_job(self, media: Path, job_dir: Path, video_id: str) -> None:
+        cfg = self.settings
+        try:
+            sent = await publish(
+                media,
+                cfg.publish_url,
+                video_id,
+                window_s=cfg.publish_window_s,
+                settings=cfg,
+                gate=self.gate,
+            )
+            self.log(f"published {sent} caption(s) as {video_id}")
+            await self._send_quietly({
+                "type": "published", "video_id": video_id, "captions": sent,
+            })
+        except (PublishError, MediaError, VLMError, OSError) as exc:
+            # A failed publish must not take the QA session with it; the phone
+            # can still ask this board questions about the media it holds.
+            self.log(f"publish failed for {video_id}: {type(exc).__name__}: {exc}")
+            await self._send_quietly({
+                "type": "publish_failed", "video_id": video_id, "message": str(exc),
+            })
+        finally:
+            shutil.rmtree(job_dir, ignore_errors=True)
+
+    async def _send_quietly(self, payload: dict) -> None:
+        """Send if the socket is still there; a hung-up phone is not an error."""
+        try:
+            await self._send(payload)
+        except (ConnectionClosed, RuntimeError):
+            pass
 
     async def _infer(self, prompt: str, stream: bool) -> Answer:
         session = self.session

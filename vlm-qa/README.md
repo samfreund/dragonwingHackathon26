@@ -53,8 +53,40 @@ cd ~/vlm-qa
 # Serve it over a WebSocket instead
 .venv/bin/python -m vlmqa serve
 
+# Caption a video and stream the text to the laptop
+.venv/bin/python -m vlmqa publish -m clip.mp4 \
+  --url ws://qcworkshop3:8001/v1/iq9 --video-id loading-dock
+
 # Is the server up, is the model loaded?
 .venv/bin/python -m vlmqa status
+```
+
+### Publishing to the laptop
+
+`ask` and `serve` are pull: something asks, the board answers. `publish` is
+push, and it is how the board feeds the laptop's question-answering service.
+
+The video is walked in `--window` second slices (10 by default), each slice is
+captioned, and each caption is appended to one durable file on the laptop over
+`stream_transport`'s protocol. Questions are then asked of the *accumulated
+text* on the laptop by `ask.py`, which can answer about the whole video rather
+than about frames that fit in one context.
+
+Captioning dominates the cost — each window is a full multimodal generation —
+so windows are sent as they finish rather than batched at the end. A dropped
+socket costs at most the window in flight: the receiver acknowledges a sequence
+only once the bytes are durable, and reruns resume from the first window it is
+missing. Reusing a `--video-id` therefore resumes; it does not duplicate.
+
+```bash
+# Denser commentary: 5s windows, 4 frames each
+.venv/bin/python -m vlmqa publish -m clip.mp4 -n 4 --window 5 \
+  --url ws://qcworkshop3:8001/v1/iq9 --video-id loading-dock
+
+# Ask for something specific rather than a general description
+.venv/bin/python -m vlmqa publish -m clip.mp4 \
+  --prompt "List every visible tool and what it is used on." \
+  --url ws://qcworkshop3:8001/v1/iq9 --video-id bench-1
 ```
 
 ### Library
@@ -336,6 +368,14 @@ On a healthy setup this shows open handles on `/dev/fastrpc-cdsp` and
   conversation history. `Session` therefore re-sends the images on every turn
   and keeps prior Q&A as plain text. Follow-ups cost about as much as the first
   question; they are not free.
+- **`max_tokens` is not enforced by the server.** GenieX ignores the field — a
+  request pinned to `max_tokens: 16` still generated 2048 tokens and stopped
+  with `finish_reason: length` at the server's own cap. `max_frames()` reserves
+  `VLMQA_MAX_TOKENS` worth of context for the answer, but nothing stops the
+  model from spending more; a runaway generation is bounded by the 4096-token
+  context, not by the setting. The 4B almost always stops well short of the cap,
+  so this rarely bites in practice — `--stream` lets a caller bail out early
+  when it does.
 - **Frame sampling is uniform, not content-aware.** An event shorter than the
   gap between samples can be missed entirely. Raise `--frames` for short clips
   with fast action.

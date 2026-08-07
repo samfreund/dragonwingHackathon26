@@ -16,7 +16,6 @@ async def stream_file(
     video_id: str,
     source: Path,
     *,
-    token: str = "",
     chunk_chars: int = 1024,
     delay: float = 0,
     retries: int = 5,
@@ -28,7 +27,6 @@ async def stream_file(
                 await websocket.send(json.dumps({
                     "type": "start",
                     "protocol": PROTOCOL_VERSION,
-                    "token": token,
                     "video_id": video_id,
                 }))
                 started = json.loads(await websocket.recv())
@@ -76,7 +74,6 @@ def main() -> None:
     parser.add_argument("--url", required=True)
     parser.add_argument("--video-id", required=True)
     parser.add_argument("--input", required=True, type=Path)
-    parser.add_argument("--token", default="")
     parser.add_argument("--chunk-chars", type=int, default=1024)
     parser.add_argument("--delay", type=float, default=0)
     args = parser.parse_args()
@@ -86,7 +83,6 @@ def main() -> None:
         args.url,
         args.video_id,
         args.input,
-        token=args.token,
         chunk_chars=args.chunk_chars,
         delay=args.delay,
     ))

@@ -98,6 +98,7 @@ READER_PATH = HERE / "npu_qa" / "npu_qa.py"
 DEFAULT_ENDPOINT = "https://aisuite-indonesia.cirrascale.com/apis/v2"
 DEFAULT_API_KEY = "745f6cf2-f53b-4ea8-ac62-1e26d7a1646b"
 DEFAULT_CLOUD_MODEL = "Llama-3.1-8B"
+# DEFAULT_CLOUD_MODEL = "Llama-3.3-70B"
 
 DEFAULT_MAX_TOKENS = 512
 DEFAULT_TEMPERATURE = 0.2  # question answering, not creative writing
