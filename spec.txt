@@ -1,0 +1,126 @@
+Host Name:                     QCWORKSHOP3
+
+OS Name:                       Microsoft Windows 11 Pro
+
+OS Version:                    10.0.26200 N/A Build 26200
+
+OS Manufacturer:               Microsoft Corporation
+
+OS Configuration:              Standalone Workstation
+
+OS Build Type:                 Multiprocessor Free
+
+Registered Owner:              qc_devrel_workshop@outlook.com
+
+Registered Organization:       N/A
+
+Product ID:                    00355-61822-94306-AAOEM
+
+Original Install Date:         15/09/2024, 04:42:59
+
+System Boot Time:              05/08/2026, 16:42:53
+
+System Manufacturer:           Dell Inc.
+
+System Model:                  Latitude 7455
+
+System Type:                   ARM64-based PC
+
+Processor(s):                  1 Processor(s) Installed.
+
+                               [01]: ARMv8 (64-bit) Family 8 Model 1 Revision 201 Qualcomm Technologies Inc ~3417 Mhz
+
+BIOS Version:                  Dell Inc. 2.15.1, 12/06/2026
+
+Windows Directory:             C:\Windows
+
+System Directory:              C:\Windows\system32
+
+Boot Device:                   \Device\HarddiskVolume1
+
+System Locale:                 en-us;English (United States)
+
+Input Locale:                  en-us;English (United States)
+
+Time Zone:                     (UTC-08:00) Pacific Time (US & Canada)
+
+Total Physical Memory:         32,324 MB
+
+Available Physical Memory:     16,801 MB
+
+Virtual Memory: Max Size:      34,372 MB
+
+Virtual Memory: Available:     15,567 MB
+
+Virtual Memory: In Use:        18,805 MB
+
+Page File Location(s):         C:\pagefile.sys
+
+Domain:                        WORKGROUP
+
+Logon Server:                  \\QCWORKSHOP3
+
+Hotfix(s):                     4 Hotfix(s) Installed.
+
+                               [01]: KB5100998
+
+                               [02]: KB5054156
+
+                               [03]: KB5121767
+
+                               [04]: KB5120102
+
+Network Card(s):               1 NIC(s) Installed.
+
+                               [01]: Wintun Userspace Tunnel
+
+                                     Connection Name: Tailscale
+
+                                     DHCP Enabled:    No
+
+                                     IP address(es)
+
+                                     [01]: 100.68.62.79
+
+                                     [02]: fe80::4505:f346:cc97:9f1d
+
+                                     [03]: fd7a:115c:a1e0::c13b:3e50
+
+Virtualization-based security: Status: Running
+
+                               Required Security Properties:
+
+                                     Base Virtualization Support
+
+                               Available Security Properties:
+
+                                     Base Virtualization Support
+
+                                     DMA Protection
+
+                                     UEFI Code Readonly
+
+                                     Mode Based Execution Control
+
+                               Services Configured:
+
+                                     Hypervisor enforced Code Integrity
+
+                                     Secure Launch
+
+                               Services Running:
+
+                                     Hypervisor enforced Code Integrity
+
+                                     Secure Launch
+
+                               App Control for Business policy: Enforced
+
+                               App Control for Business user mode policy: Off
+
+                               Security Features Enabled:
+
+                                     Return Address Signing (Kernel-mode)
+
+Hyper-V Requirements:          A hypervisor has been detected. Features required for Hyper-V will not be displayed.
+
